@@ -1,7 +1,8 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Windows.Forms; // Dosya diyaloğu için eklendi
+using System.Linq;
+using System.Windows.Forms; // Dosya diyalo�u i�in eklendi
 using ConsoleApp3.Parsers;
 
 namespace ConsoleApp3
@@ -21,7 +22,7 @@ namespace ConsoleApp3
     }
 
     /// <summary>
-    /// A* algoritması için isimlendirilmiş bir ağırlık yapılandırmasını temsil eder.
+    /// A* algoritmas� i�in isimlendirilmi� bir a��rl�k yap�land�rmas�n� temsil eder.
     /// </summary>
     public class AgirlikAyari
     {
@@ -37,58 +38,239 @@ namespace ConsoleApp3
 
     internal class AnaProgram
     {
-        // [STAThread] özniteliği, OpenFileDialog gibi Windows Formları
-        // bileşenlerinin doğru çalışması için gereklidir.
+        private const string SAMPLE_FOLDER = "Sample";
+        private const string XODR_FOLDER = "XODR";
+        private const string OSM_FOLDER = "OSM";
+
+        // [STAThread] �zniteli�i, OpenFileDialog gibi Windows Formlar�
+        // bile�enlerinin do�ru �al��mas� i�in gereklidir.
         [STAThread]
         static void Main(string[] args)
         {
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
+            
+            // Konsol buffer boyutunu art�r - ��kt�lar�n kaybolmamas� i�in
+            try
+            {
+                Console.BufferHeight = 9999; // Maksimum sat�r say�s�
+                Console.BufferWidth = 120;   // Geni�lik
+            }
+            catch
+            {
+                // Baz� ortamlarda buffer ayarlanamayabilir, �nemseme
+            }
+            
+            Console.WriteLine("============================================================");
+            Console.WriteLine("        Harita Dosyasi Isleme ve Rota Planlama             ");
+            Console.WriteLine("        OpenDRIVE (.xodr) & OpenStreetMap (.osm)           ");
+            Console.WriteLine("============================================================");
+            
             while (true)
             {
-                Console.WriteLine("\nHarita dosyası yüklemek için 'dy' yazıp Enter'a basın.");
-                Console.WriteLine("Programdan çıkmak için 'exit' yazıp Enter'a basın.");
-                string userInput = Console.ReadLine().Trim().ToLower();
-
-                if (userInput == "exit")
-                {
-                    break; // Döngüyü sonlandır ve programdan çık.
-                }
+                Console.WriteLine("\n------------------------------------------------------------");
+                Console.WriteLine("| MENU                                                     |");
+                Console.WriteLine("------------------------------------------------------------");
+                Console.WriteLine("| [1] Dosya Sec         - Bilgisayardan harita yukle       |");
+                Console.WriteLine("| [2] Sample Harita     - Ornek haritalardan sec           |");
+                Console.WriteLine("| [3] Cikis             - Programdan cik                   |");
+                Console.WriteLine("------------------------------------------------------------");
+                Console.Write("\nSeciminiz (1-3): ");
                 
-                if (userInput == "dy")
-                {
-                    string mapFilePath = SelectMapFile();
+                string userInput = Console.ReadLine()?.Trim();
 
-                    if (string.IsNullOrEmpty(mapFilePath))
-                    {
-                        Console.WriteLine("Dosya seçilmedi. Lütfen tekrar deneyin.");
-                        continue; // Döngünün başına dön.
-                    }
-
-                    // Dosya seçildiyse, haritayı işle.
-                    ProcessMapFile(mapFilePath);
-                }
-                else
+                switch (userInput)
                 {
-                    Console.WriteLine("Geçersiz komut. Lütfen 'dy' veya 'exit' yazın.");
+                    case "1":
+                        {
+                            string mapFilePath = SelectMapFile();
+                            if (!string.IsNullOrEmpty(mapFilePath))
+                            {
+                                ProcessMapFile(mapFilePath);
+                            }
+                            else
+                            {
+                                Console.WriteLine("Dosya secilmedi.");
+                            }
+                            break;
+                        }
+                    case "2":
+                        {
+                            string sampleFilePath = SelectSampleMap();
+                            if (!string.IsNullOrEmpty(sampleFilePath))
+                            {
+                                ProcessMapFile(sampleFilePath);
+                            }
+                            else
+                            {
+                                Console.WriteLine("Sample harita secilmedi.");
+                            }
+                            break;
+                        }
+                    case "3":
+                        Console.WriteLine("\nProgram sonlandiriliyor...");
+                        return;
+                    default:
+                        Console.WriteLine("Gecersiz secim! Lutfen 1, 2 veya 3 girin.");
+                        break;
                 }
             }
-
-            Console.WriteLine("\nProgram sonlandırıldı.");
         }
 
         /// <summary>
-        /// Kullanıcının bir harita dosyası seçmesi için bir dosya seçim diyaloğu açar.
+        /// Sample klas�r�n� bulur - �nce �al��ma dizininde, sonra proje dizininde arar
         /// </summary>
-        /// <returns>Seçilen dosyanın tam yolu veya seçim iptal edilirse null.</returns>
+        private static string FindSampleFolder()
+        {
+            // 1. �nce �al��ma dizininde ara (bin\Debug\Sample)
+            string currentDir = Directory.GetCurrentDirectory();
+            string samplePath = Path.Combine(currentDir, SAMPLE_FOLDER);
+            if (Directory.Exists(samplePath))
+            {
+                return samplePath;
+            }
+
+            // 2. Proje dizininde ara (3 seviye yukar�: bin\Debug -> bin -> proje)
+            string projectDir = Path.GetFullPath(Path.Combine(currentDir, "..", "..", SAMPLE_FOLDER));
+            if (Directory.Exists(projectDir))
+            {
+                return projectDir;
+            }
+
+            // 3. �al��t�r�labilir dosyan�n bulundu�u dizinin �st dizininde ara
+            string exeDir = AppDomain.CurrentDomain.BaseDirectory;
+            string exeSamplePath = Path.Combine(exeDir, SAMPLE_FOLDER);
+            if (Directory.Exists(exeSamplePath))
+            {
+                return exeSamplePath;
+            }
+
+            // 4. Exe dizininin 2 �st dizininde ara (proje k�k dizini)
+            string projectRootSample = Path.GetFullPath(Path.Combine(exeDir, "..", "..", SAMPLE_FOLDER));
+            if (Directory.Exists(projectRootSample))
+            {
+                return projectRootSample;
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Sample klas�r�nden harita se�imi yapar
+        /// </summary>
+        private static string SelectSampleMap()
+        {
+            // Sample klas�r�n� bul
+            string sampleFolder = FindSampleFolder();
+            
+            if (string.IsNullOrEmpty(sampleFolder))
+            {
+                Console.WriteLine($"\n'{SAMPLE_FOLDER}' klasoru bulunamadi!");
+                Console.WriteLine($"   Arama yapilan dizinler:");
+                Console.WriteLine($"   - {Path.Combine(Directory.GetCurrentDirectory(), SAMPLE_FOLDER)}");
+                Console.WriteLine($"   - {Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "..", "..", SAMPLE_FOLDER))}");
+                Console.WriteLine($"   - {Path.Combine(AppDomain.CurrentDomain.BaseDirectory, SAMPLE_FOLDER)}");
+                Console.WriteLine($"\n   Lutfen Sample klasorunu olusturun ve icine harita dosyalari ekleyin.");
+                Console.WriteLine($"   Veya 'CopySampleFiles.bat' dosyasini calistirin.");
+                return null;
+            }
+
+            // XODR ve OSM dosyalar�n� topla
+            var xodrPath = Path.Combine(sampleFolder, XODR_FOLDER);
+            var osmPath = Path.Combine(sampleFolder, OSM_FOLDER);
+
+            var xodrFiles = Directory.Exists(xodrPath) 
+                ? Directory.GetFiles(xodrPath, "*.xodr") 
+                : new string[0];
+            
+            var osmFiles = Directory.Exists(osmPath) 
+                ? Directory.GetFiles(osmPath, "*.osm") 
+                : new string[0];
+
+            var allSampleFiles = xodrFiles.Concat(osmFiles).ToList();
+
+            if (allSampleFiles.Count == 0)
+            {
+                Console.WriteLine("\nSample klasorunde hic harita dosyasi bulunamadi!");
+                Console.WriteLine($"   XODR klasoru: {xodrPath}");
+                Console.WriteLine($"   OSM klasoru: {osmPath}");
+                Console.WriteLine($"\n   Lutfen bu klasorlere harita dosyalari ekleyin:");
+                Console.WriteLine($"   - .xodr dosyalari icin: {xodrPath}");
+                Console.WriteLine($"   - .osm dosyalari icin: {osmPath}");
+                Console.WriteLine($"\n   Dosya ekledikten sonra 'CopySampleFiles.bat' calistirin.");
+                return null;
+            }
+
+            // Sample haritalar� listele
+            Console.WriteLine("\n============================================================");
+            Console.WriteLine("              SAMPLE HARITALAR                              ");
+            Console.WriteLine("============================================================\n");
+
+            for (int i = 0; i < allSampleFiles.Count; i++)
+            {
+                var file = allSampleFiles[i];
+                var fileName = Path.GetFileName(file);
+                var fileType = Path.GetExtension(file).ToUpper();
+                var fileSize = new FileInfo(file).Length;
+                var fileSizeKB = fileSize / 1024.0;
+                var fileSizeMB = fileSizeKB / 1024.0;
+
+                string sizeStr = fileSizeMB > 1 
+                    ? $"{fileSizeMB:F1} MB" 
+                    : $"{fileSizeKB:F1} KB";
+
+                Console.WriteLine($"  [{i + 1}] {fileName}");
+                Console.WriteLine($"      Tip: {fileType}  |  Boyut: {sizeStr}");
+                Console.WriteLine();
+            }
+
+            Console.WriteLine("  [0] Geri Don");
+            Console.WriteLine();
+
+            // Kullanicidan secim al
+            while (true)
+            {
+                Console.Write($"Harita secin (0-{allSampleFiles.Count}): ");
+                string input = Console.ReadLine()?.Trim();
+
+                if (int.TryParse(input, out int selection))
+                {
+                    if (selection == 0)
+                    {
+                        return null; // Geri don
+                    }
+
+                    if (selection >= 1 && selection <= allSampleFiles.Count)
+                    {
+                        string selectedFile = allSampleFiles[selection - 1];
+                        Console.WriteLine($"\nSecilen harita: {Path.GetFileName(selectedFile)}");
+                        return selectedFile;
+                    }
+                }
+
+                Console.WriteLine($"Gecersiz secim! Lutfen 0 ile {allSampleFiles.Count} arasinda bir sayi girin.");
+            }
+        }
+
+        /// <summary>
+        /// Kullanicinin bir harita dosyasi secmesi icin bir dosya secim diyalogu acar.
+        /// </summary>
+        /// <returns>Secilen dosyanin tam yolu veya secim iptal edilirse null.</returns>
         private static string SelectMapFile()
         {
             using (var openFileDialog = new OpenFileDialog())
             {
-                openFileDialog.Title = "Harita Dosyası Seçin (.osm, .xodr)";
-                openFileDialog.Filter = "Harita Dosyaları (*.osm;*.xodr)|*.osm;*.xodr|Tüm Dosyalar (*.*)|*.*";
+                openFileDialog.Title = "Harita Dosyasi Secin (.osm, .xodr)";
+                openFileDialog.Filter = "Harita Dosyalari (*.osm;*.xodr)|*.osm;*.xodr|OpenDRIVE (*.xodr)|*.xodr|OpenStreetMap (*.osm)|*.osm|Tum Dosyalar (*.*)|*.*";
                 openFileDialog.FilterIndex = 1;
                 openFileDialog.RestoreDirectory = true;
+
+                // Eger Sample klasoru varsa, baslangic dizini olarak ayarla
+                string sampleFolder = FindSampleFolder();
+                if (!string.IsNullOrEmpty(sampleFolder))
+                {
+                    openFileDialog.InitialDirectory = sampleFolder;
+                }
 
                 var result = openFileDialog.ShowDialog();
                 if (result == DialogResult.OK)
@@ -100,59 +282,105 @@ namespace ConsoleApp3
         }
 
         /// <summary>
-        /// Seçilen harita dosyasını işler, grafı oluşturur ve algoritmaları çalıştırır.
+        /// Secilen harita dosyasini isler, grafi olusturur ve algoritmalari calistirir.
         /// </summary>
-        /// <param name="mapFilePath">İşlenecek harita dosyasının yolu.</param>
+        /// <param name="mapFilePath">Islenecek harita dosyasinin yolu.</param>
         private static void ProcessMapFile(string mapFilePath)
         {
             try
             {
-                Console.WriteLine($"\n'{Path.GetFileName(mapFilePath)}' dosyasından graf verisi okunuyor...");
+                Console.Clear(); // Onceki ciktilari temizle
+                
+                Console.WriteLine("\n" + new string('=', 60));
+                Console.WriteLine($"Dosya: {Path.GetFileName(mapFilePath)}");
+                Console.WriteLine($"Yol: {Path.GetDirectoryName(mapFilePath)}");
+                Console.WriteLine(new string('=', 60));
+                
+                Console.WriteLine("\nGraf verisi okunuyor...");
                 GraphData graph = ParseMap(mapFilePath);
-                Console.WriteLine($"Graf başarıyla oluşturuldu. Düğüm sayısı: {graph.NodeCount}");
+                
+                Console.WriteLine($"Graf basariyla olusturuldu!");
+                Console.WriteLine($"  - Dugum sayisi: {graph.NodeCount}");
+                Console.WriteLine($"  - Kenar sayisi: {graph.EdgeCount}");
+                Console.WriteLine($"  - Koordinat verisi: {(graph.NodeCoordinates != null ? "Var" : "Yok")}");
+
+                // Bellek kullanimi
+                long memoryUsed = GC.GetTotalMemory(false) / 1024 / 1024;
+                Console.WriteLine($"  - Bellek kullanimi: {memoryUsed} MB");
 
                 if (graph.NodeCount < 2)
                 {
-                    Console.WriteLine("Algoritmayı çalıştırmak için graf yeterli düğüme sahip değil.");
+                    Console.WriteLine("\nGraf yeterli dugume sahip degil (minimum 2 dugum gerekli).");
+                    Console.WriteLine("\nDevam etmek icin bir tusa basin...");
+                    Console.ReadKey();
                     return;
                 }
 
-                // Kullanıcıdan başlangıç ve bitiş düğümleri (1-based) alınır
-                int baslangicDugumu = GetNodeInput($"Başlangıç düğümünü girin (1 - {graph.NodeCount}): ", graph.NodeCount) - 1;
-                int hedefDugumu = GetNodeInput($"Bitiş düğümünü girin (1 - {graph.NodeCount}): ", graph.NodeCount) - 1;
+                // Kullanicidan baslangic ve bitis dugumleri (1-based) alinir
+                Console.WriteLine("\n" + new string('-', 60));
+                int baslangicDugumu = GetNodeInput($"Baslangic dugumu (1-{graph.NodeCount}): ", graph.NodeCount) - 1;
+                int hedefDugumu = GetNodeInput($"Hedef dugumu (1-{graph.NodeCount}): ", graph.NodeCount) - 1;
 
-                Console.WriteLine($"\n--- Algoritmalar Çalıştırılıyor (Başlangıç: {baslangicDugumu + 1}, Hedef: {hedefDugumu + 1}) ---");
+                Console.WriteLine("\n" + new string('=', 60));
+                Console.WriteLine($"ALGORITMALAR CALISTIRILIYOR");
+                Console.WriteLine($"   Baslangic: Dugum {baslangicDugumu + 1}");
+                Console.WriteLine($"   Hedef: Dugum {hedefDugumu + 1}");
+                Console.WriteLine(new string('=', 60));
 
-                // Dijkstra Algoritması (sadece seçilen hedefe odaklı çıktı)
+                // Dijkstra Algoritmasi (Adjacency List ile)
+                Console.WriteLine("\n--- DIJKSTRA ALGORITMASI ---");
                 DijkstraAlgoritmasi dijkstra = new DijkstraAlgoritmasi(graph.NodeCount);
-                dijkstra.Calistir(graph.AdjacencyMatrix, baslangicDugumu);
-                int[] dijkstraPath = GetPathFromDijkstra(dijkstra, hedefDugumu);
+                dijkstra.Calistir(graph.AdjacencyList, baslangicDugumu);
                 dijkstra.SonuclariYazdir(hedefDugumu);
+                Console.WriteLine(new string('-', 60));
 
-                // Ağırlıklı A* Algoritması Testleri
+                // Agirlikli A* Algoritmasi Testleri
                 List<AgirlikAyari> testSenaryolari = new List<AgirlikAyari>
                 {
-                    new AgirlikAyari("Hızlı Rota (Heuristic Odaklı)", 0.5),
+                    new AgirlikAyari("Hizli Rota (Heuristic Odakli)", 0.5),
                     new AgirlikAyari("Dengeli Rota (Standart A*)", 1.0),
-                    new AgirlikAyari("Güvenli Rota (Maliyet Odaklı)", 2.0)
+                    new AgirlikAyari("Guvenli Rota (Maliyet Odakli)", 2.0)
                 };
 
                 foreach (var senaryo in testSenaryolari)
                 {
-                    Console.WriteLine($"\n--- Test Senaryosu: '{senaryo.Isim}' ---");
+                    Console.WriteLine($"\n--- A* ALGORITMASI: {senaryo.Isim} ---");
                     AStarAlgorithm astar = new AStarAlgorithm(graph.NodeCount, graph.NodeCoordinates, senaryo.Deger);
-                    astar.Calistir(graph.AdjacencyMatrix, baslangicDugumu, hedefDugumu);
+                    astar.Calistir(graph.AdjacencyList, baslangicDugumu, hedefDugumu);
                     astar.SonuclariYazdir();
+                    Console.WriteLine(new string('-', 60));
                 }
+
+                Console.WriteLine("\nTum algoritmalar basariyla tamamlandi!");
+                Console.WriteLine(new string('=', 60));
+                
+                // Sonuclari gormek icin bekle
+                Console.WriteLine("\nSonuclari gormek icin yukari kaydirin.");
+                Console.WriteLine("Ana menuye donmek icin bir tusa basin...");
+                Console.ReadKey();
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Bir hata oluştu: {ex.Message}");
+                Console.WriteLine($"\nHATA: {ex.Message}");
+                Console.WriteLine($"   Detay: {ex.StackTrace}");
+                Console.WriteLine("\nDevam etmek icin bir tusa basin...");
+                Console.ReadKey();
+            }
+            finally
+            {
+                // Bellek temizligi - buyuk dosyalar icin onemli
+                Console.WriteLine("\nBellek temizleniyor...");
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                GC.Collect();
+                
+                long memoryAfter = GC.GetTotalMemory(true) / 1024 / 1024;
+                Console.WriteLine($"Temizlik sonrasi bellek: {memoryAfter} MB");
             }
         }
 
         /// <summary>
-        /// Verilen dosya yolundaki harita dosyasını uzantısına göre ayrıştırır.
+        /// Verilen dosya yolundaki harita dosyasini uzantisina gore ayristirir.
         /// </summary>
         private static GraphData ParseMap(string filePath)
         {
@@ -161,17 +389,19 @@ namespace ConsoleApp3
             switch (extension)
             {
                 case ".osm":
+                    Console.WriteLine("Parser: OpenStreetMap (OSM)");
                     var osmParser = new OsmParser();
                     return osmParser.Parse(filePath);
                 case ".xodr":
+                    Console.WriteLine("Parser: OpenDRIVE (XODR)");
                     var xodrParser = new XodrParser();
                     return xodrParser.Parse(filePath);
                 default:
-                    throw new NotSupportedException($"Desteklenmeyen dosya uzantısı: {extension}. Yalnızca .osm ve .xodr desteklenir.");
+                    throw new NotSupportedException($"Desteklenmeyen dosya uzantisi: {extension}. Yalnizca .osm ve .xodr desteklenir.");
             }
         }
 
-        // Dijkstra yolunu çıkar
+        // Dijkstra yolunu cikar
         private static int[] GetPathFromDijkstra(DijkstraAlgoritmasi dijkstra, int hedef)
         {
             var path = new List<int>();
@@ -184,7 +414,8 @@ namespace ConsoleApp3
             }
             return path.ToArray();
         }
-        // A* yolunu çıkar
+
+        // A* yolunu cikar
         private static int[] GetPathFromAStar(AStarAlgorithm astar, int hedef)
         {
             var path = new List<int>();
@@ -207,7 +438,7 @@ namespace ConsoleApp3
                 string input = Console.ReadLine();
                 if (int.TryParse(input, out node) && node >= 1 && node <= maxNode)
                     return node;
-                Console.WriteLine($"Geçersiz giriş. 1 ile {maxNode} arasında bir sayı girin.");
+                Console.WriteLine($"Gecersiz giris! 1 ile {maxNode} arasinda bir sayi girin.");
             } while (true);
         }
     }

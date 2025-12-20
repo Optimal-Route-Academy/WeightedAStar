@@ -3,20 +3,20 @@ using System;
 namespace ConsoleApp3.Utils
 {
     /// <summary>
-    /// Coðrafi hesaplamalar için yardýmcý metotlar içerir.
+    /// Cografi hesaplamalar icin yardimci metotlar icerir.
     /// </summary>
     public static class GeoUtils
     {
         private const double EarthRadiusMeters = 6371000.0;
 
         /// <summary>
-        /// Ýki coðrafi koordinat arasýndaki mesafeyi Haversine formülünü kullanarak metre cinsinden hesaplar.
+        /// Iki cografi koordinat arasindaki mesafeyi Haversine formulunu kullanarak metre cinsinden hesaplar.
         /// </summary>
-        /// <param name="lat1">Birinci noktanýn enlemi (derece).</param>
-        /// <param name="lon1">Birinci noktanýn boylamý (derece).</param>
-        /// <param name="lat2">Ýkinci noktanýn enlemi (derece).</param>
-        /// <param name="lon2">Ýkinci noktanýn boylamý (derece).</param>
-        /// <returns>Ýki nokta arasýndaki mesafe (metre).</returns>
+        /// <param name="lat1">Birinci noktanin enlemi (derece).</param>
+        /// <param name="lon1">Birinci noktanin boylami (derece).</param>
+        /// <param name="lat2">Ikinci noktanin enlemi (derece).</param>
+        /// <param name="lon2">Ikinci noktanin boylami (derece).</param>
+        /// <returns>Iki nokta arasindaki mesafe (metre).</returns>
         public static double HaversineDistance(double lat1, double lon1, double lat2, double lon2)
         {
             var dLat = ToRadians(lat2 - lat1);
@@ -33,7 +33,7 @@ namespace ConsoleApp3.Utils
         }
 
         /// <summary>
-        /// Dereceyi radyana çevirir.
+        /// Dereceyi radyana cevirir.
         /// </summary>
         private static double ToRadians(double angle)
         {

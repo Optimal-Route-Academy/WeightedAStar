@@ -6,25 +6,25 @@ using ConsoleApp3.Utils;
 
 namespace ConsoleApp3.Parsers
 {
-    /// <summary>
-    /// .osm (OpenStreetMap) dosyalarýný ayrýþtýrarak bir graf modeli oluþturur.
-    /// Gerçek OSM node'larý düðüm olarak alýnýr, ardýþýk node'lar arasý mesafe kenar olarak eklenir.
-    /// </summary>
+    
+    /// .osm (OpenStreetMap) dosyalarini ayristirarak bir graf modeli olusturur.
+    /// Gercek OSM node'lari dugum olarak alinir, ardisik node'lar arasi mesafe kenar olarak eklenir.
+    
     public class OsmParser
     {
-        /// <summary>
-        /// Bir .osm dosyasýný ayrýþtýrýr ve graf verisi oluþturur.
-        /// </summary>
+        
+        /// Bir .osm dosyasini ayristirir ve graf verisi olusturur.
+        
         public GraphData Parse(string filePath)
         {
-            Console.WriteLine("OSM dosyasý ayrýþtýrýlýyor...");
+            Console.WriteLine("OSM dosyasi ayristiriliyor...");
             XDocument doc = XDocument.Load(filePath);
             var ns = doc.Root.Name.Namespace;
             
-            // 1. Adým: Tüm düðümleri (node) ve koordinatlarýný oku
-            Console.WriteLine("OSM node'larý okunuyor...");
+            // 1. Adim: Tum dugumleri (node) ve koordinatlarini oku
+            Console.WriteLine("OSM node'lari okunuyor...");
             var nodeElements = doc.Descendants(ns + "node").ToList();
-            Console.WriteLine($"Bulunan toplam OSM node sayýsý: {nodeElements.Count}");
+            Console.WriteLine($"Bulunan toplam OSM node sayisi: {nodeElements.Count}");
             
             var nodeCoords = new Dictionary<string, Point>();
             foreach (var node in nodeElements)
@@ -38,15 +38,15 @@ namespace ConsoleApp3.Parsers
                 
                 nodeCoords[nodeId] = new Point(lon, lat, ele);
             }
-            Console.WriteLine($"Koordinat çýkarýlan node sayýsý: {nodeCoords.Count}");
+            Console.WriteLine($"Koordinat cikarilan node sayisi: {nodeCoords.Count}");
 
-            // 2. Adým: Sadece "highway" olarak etiketlenmiþ yollarý (way) bul
+            // 2. Adim: Sadece "highway" olarak etiketlenmis yollari (way) bul
             var highways = doc.Descendants(ns + "way")
                 .Where(w => w.Elements(ns + "tag").Any(t => (string)t.Attribute("k") == "highway"))
                 .ToList();
-            Console.WriteLine($"Bulunan highway sayýsý: {highways.Count}");
+            Console.WriteLine($"Bulunan highway sayisi: {highways.Count}");
 
-            // 3. Adým: Graf için gerekli düðüm kümesini bul (way'lerde kullanýlan node'lar)
+            // 3. Adim: Graf icin gerekli dugum kumesini bul (way'lerde kullanilan node'lar)
             var usedNodeIds = new HashSet<string>();
             foreach (var way in highways)
             {
@@ -59,9 +59,9 @@ namespace ConsoleApp3.Parsers
                     }
                 }
             }
-            Console.WriteLine($"Highway'lerde kullanýlan benzersiz node sayýsý: {usedNodeIds.Count}");
+            Console.WriteLine($"Highway'lerde kullanilan benzersiz node sayisi: {usedNodeIds.Count}");
 
-            // 4. Adým: Kullanýlan node'larý düðüm listesine ekle
+            // 4. Adim: Kullanilan node'lari dugum listesine ekle
             var nodeList = usedNodeIds.ToList();
             var nodeIdToIndex = new Dictionary<string, int>();
             for (int i = 0; i < nodeList.Count; i++)
@@ -69,11 +69,8 @@ namespace ConsoleApp3.Parsers
                 nodeIdToIndex[nodeList[i]] = i;
             }
 
-            // 5. Adým: Komþuluk matrisini oluþtur (Infinity tabanlý)
-            var adjacencyMatrix = new double[nodeList.Count, nodeList.Count];
-            for (int i = 0; i < nodeList.Count; i++)
-                for (int j = 0; j < nodeList.Count; j++)
-                    adjacencyMatrix[i, j] = double.PositiveInfinity;
+            // 5. Adim: Adjacency List olustur (matris yerine - bellek verimli)
+            var adjacencyList = new Dictionary<int, List<Edge>>();
 
             var coordinates = new Point[nodeList.Count];
             for (int i = 0; i < nodeList.Count; i++)
@@ -81,27 +78,46 @@ namespace ConsoleApp3.Parsers
                 coordinates[i] = nodeCoords[nodeList[i]];
             }
 
-            // 6. Adým: Yollarý iþle ve baðlantýlarý ekle
+            // 6. Adim: Yollari isle ve baglantilari ekle
             int oneWayCount = 0;
             int twoWayCount = 0;
             int reverseOnlyCount = 0;
+            int implicitOneWayCount = 0;
             int totalEdgeCount = 0;
 
             foreach (var way in highways)
             {
-                // Tek yönlü yol kontrolü
+                // Explicit oneway etiketi kontrolu
                 var onewayTag = way.Elements(ns + "tag").FirstOrDefault(t => (string)t.Attribute("k") == "oneway");
                 string onewayValue = onewayTag?.Attribute("v")?.Value;
                 bool isOneWayForward = onewayValue == "yes" || onewayValue == "true" || onewayValue == "1";
                 bool isOneWayReverse = onewayValue == "-1";
                 bool isTwoWay = !isOneWayForward && !isOneWayReverse;
-                
-                // Ýstatistik
+
+                // Implicit oneway kurallari (OSM standartlari)
+                // junction=roundabout -> her zaman tek yonlu (saat yonunun tersi)
+                // highway=motorway veya motorway_link -> genelde tek yonlu
+                var junctionTag = way.Elements(ns + "tag").FirstOrDefault(t => (string)t.Attribute("k") == "junction")?.Attribute("v")?.Value;
+                var highwayTag = way.Elements(ns + "tag").FirstOrDefault(t => (string)t.Attribute("k") == "highway")?.Attribute("v")?.Value;
+
+                bool isRoundabout = junctionTag == "roundabout" || junctionTag == "circular";
+                bool isMotorway = highwayTag == "motorway" || highwayTag == "motorway_link";
+                bool isTrunk = highwayTag == "trunk" || highwayTag == "trunk_link";
+
+                // Implicit oneway: Roundabout ve Motorway
+                if (isTwoWay && (isRoundabout || isMotorway))
+                {
+                    isOneWayForward = true;
+                    isTwoWay = false;
+                    implicitOneWayCount++;
+                }
+
+                // Istatistik
                 if (isOneWayForward) oneWayCount++;
                 else if (isOneWayReverse) reverseOnlyCount++;
                 else twoWayCount++;
 
-                // Way içindeki ardýþýk node'larý baðla
+                // Way icindeki ardisik node'lari bagla
                 var nodeRefs = way.Elements(ns + "nd")
                     .Select(nd => nd.Attribute("ref")?.Value)
                     .Where(id => !string.IsNullOrEmpty(id) && nodeCoords.ContainsKey(id))
@@ -112,41 +128,55 @@ namespace ConsoleApp3.Parsers
                     string fromId = nodeRefs[i];
                     string toId = nodeRefs[i + 1];
 
+
                     if (!nodeIdToIndex.TryGetValue(fromId, out int fromIdx) || 
                         !nodeIdToIndex.TryGetValue(toId, out int toIdx))
                         continue;
 
-                    // Ýki node arasý mesafeyi Haversine ile hesapla (metre)
+                    // Iki node arasi mesafeyi Haversine ile hesapla (metre)
                     double distance = GeoUtils.HaversineDistance(
                         coordinates[fromIdx].Y, coordinates[fromIdx].X,  // lat, lon
                         coordinates[toIdx].Y, coordinates[toIdx].X);
 
                     if (isOneWayReverse)
                     {
-                        // Sadece ters yön
-                        adjacencyMatrix[toIdx, fromIdx] = distance;
+                        // Sadece ters yon
+                        if (!adjacencyList.ContainsKey(toIdx))
+                            adjacencyList[toIdx] = new List<Edge>();
+                        adjacencyList[toIdx].Add(new Edge(fromIdx, distance));
                         totalEdgeCount++;
                     }
                     else if (isOneWayForward)
                     {
-                        // Sadece ileri yön
-                        adjacencyMatrix[fromIdx, toIdx] = distance;
+                        // Sadece ileri yon
+                        if (!adjacencyList.ContainsKey(fromIdx))
+                            adjacencyList[fromIdx] = new List<Edge>();
+                        adjacencyList[fromIdx].Add(new Edge(toIdx, distance));
                         totalEdgeCount++;
                     }
                     else // isTwoWay
                     {
-                        // Çift yön
-                        adjacencyMatrix[fromIdx, toIdx] = distance;
-                        adjacencyMatrix[toIdx, fromIdx] = distance;
+                        // Cift yon
+                        if (!adjacencyList.ContainsKey(fromIdx))
+                            adjacencyList[fromIdx] = new List<Edge>();
+                        adjacencyList[fromIdx].Add(new Edge(toIdx, distance));
+
+                        if (!adjacencyList.ContainsKey(toIdx))
+                            adjacencyList[toIdx] = new List<Edge>();
+                        adjacencyList[toIdx].Add(new Edge(fromIdx, distance));
                         totalEdgeCount += 2;
                     }
                 }
             }
             
-            Console.WriteLine($"OSM graf oluþturuldu. Düðüm sayýsý: {nodeList.Count}, kenar sayýsý: {totalEdgeCount}");
-            Console.WriteLine($"Yol tipi daðýlýmý: Ýki yönlü: {twoWayCount}, Tek yönlü ileri: {oneWayCount}, Tek yönlü geri: {reverseOnlyCount}");
+            Console.WriteLine($"OSM graf olusturuldu. Dugum sayisi: {nodeList.Count}, kenar sayisi: {totalEdgeCount}");
+            Console.WriteLine($"Yol tipi dagilimi: Iki yonlu: {twoWayCount}, Tek yonlu ileri: {oneWayCount}, Tek yonlu geri: {reverseOnlyCount}");
+            if (implicitOneWayCount > 0)
+            {
+                Console.WriteLine($"  (Roundabout/Motorway implicit tek yon: {implicitOneWayCount})");
+            }
 
-            return new GraphData(adjacencyMatrix, coordinates, nodeIdToIndex);
+            return new GraphData(adjacencyList, coordinates, nodeIdToIndex);
         }
     }
 }

@@ -1,111 +1,139 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace ConsoleApp3
 {
-    /// Bir baþlangýç düðümünden graf'taki diðer tüm düðümlere en kýsa yollarý
-    /// hesaplamak için Dijkstra'nýn algoritmasýný uygular.
+    /// <summary>
+    /// Bir baslangic dugumunden graf'taki diger tum dugumlere en kisa yollari
+    /// hesaplamak icin Dijkstra'nin algoritmasini uygular.
+    /// Adjacency List kullanarak bellek verimli calisir.
+    /// </summary>
     public class DijkstraAlgoritmasi
     {
-        // Sýnýfýn temel deðiþkenleri
-        private readonly int dugumSayisi;      // Graf'taki toplam düðüm sayýsý.
-        private double[] mesafeler;           // Baþlangýçtan her düðüme olan hesaplanmýþ en kýsa mesafe.
-        private int[] oncekiDugumler;         // En kýsa yolu izlemek için her düðümün kendisinden önceki düðümü.
-        private int baslangicDugumu;          // Algoritmanýn baþlayacaðý kaynak düðüm.
+        private readonly int dugumSayisi;
+        private double[] mesafeler;
+        private int[] oncekiDugumler;
+        private int baslangicDugumu;
+        private readonly Dictionary<string, int> nodeIdToIndexMap;
 
-        /// Dijkstra algoritmasý için gerekli olan temel parametreleri ayarlar.
+        /// <summary>
+        /// Dijkstra algoritmasi icin gerekli olan temel parametreleri ayarlar.
+        /// </summary>
         public DijkstraAlgoritmasi(int dugumSayisi)
         {
             this.dugumSayisi = dugumSayisi;
+            this.nodeIdToIndexMap = null;
         }
 
-        /// Algoritmayý çalýþtýrarak en kýsa yollarý hesaplar.
-        public void Calistir(double[,] komsulukMatrisi, int baslangicDugumu)
+        /// <summary>
+        /// Dijkstra algoritmasi icin gerekli olan temel parametreleri ayarlar (Node ID destegi ile).
+        /// </summary>
+        public DijkstraAlgoritmasi(int dugumSayisi, Dictionary<string, int> nodeIdToIndexMap)
+        {
+            this.dugumSayisi = dugumSayisi;
+            this.nodeIdToIndexMap = nodeIdToIndexMap;
+        }
+
+        /// <summary>
+        /// Algoritmayi calistirarak en kisa yollari hesaplar - Adjacency List ile (bellek verimli)
+        /// </summary>
+        public void Calistir(Dictionary<int, List<Edge>> adjacencyList, int baslangicDugumu)
         {
             this.baslangicDugumu = baslangicDugumu;
             mesafeler = new double[dugumSayisi];
             oncekiDugumler = new int[dugumSayisi];
             bool[] ziyaretEdildi = new bool[dugumSayisi];
 
-            // 1. Baþlatma: Tüm mesafeleri 'sonsuz' olarak ayarla ve baþlangýç düðümünün
-            // mesafesini 0 yap. Bu, algoritmanýn baþlangýç noktasýný belirler.
             for (int i = 0; i < dugumSayisi; i++)
             {
-                mesafeler[i] = double.MaxValue;
-                ziyaretEdildi[i] = false;
+                mesafeler[i] = double.PositiveInfinity;
                 oncekiDugumler[i] = -1;
+                ziyaretEdildi[i] = false;
             }
+
             mesafeler[baslangicDugumu] = 0;
 
-            // 2. Ana Döngü: Tüm düðümler için en kýsa yol bulunana kadar devam et.
-            for (int sayac = 0; sayac < dugumSayisi - 1; sayac++)
+            // Priority Queue kullanarak performans optimizasyonu
+            var priorityQueue = new SortedSet<(double mesafe, int dugum)>();
+            priorityQueue.Add((0, baslangicDugumu));
+
+            while (priorityQueue.Count > 0)
             {
-                // Henüz ziyaret edilmemiþ düðümler arasýndan en kýsa mesafeye sahip olaný seç.
-                int u = EnKisaMesafeDugumuBul(mesafeler, ziyaretEdildi);
-                if (u == -1) break; // Ulaþýlacak düðüm kalmadýysa döngüyü sonlandýr.
+                var current = priorityQueue.Min;
+                priorityQueue.Remove(current);
+                int currentNode = current.dugum;
 
-                ziyaretEdildi[u] = true;
+                if (ziyaretEdildi[currentNode]) continue;
+                ziyaretEdildi[currentNode] = true;
 
-                // 3. Gevþetme (Relaxation): Seçilen düðüm (u) üzerinden komþu düðümlere (v)
-                // daha kýsa bir yol olup olmadýðýný kontrol et.
-                for (int v = 0; v < dugumSayisi; v++)
+                // Sadece gercek komsular uzerinde don (Adjacency List avantaji)
+                if (!adjacencyList.ContainsKey(currentNode))
+                    continue;
+
+                foreach (var edge in adjacencyList[currentNode])
                 {
-                    double agirlik = komsulukMatrisi[u, v];
-                    if (!ziyaretEdildi[v] && agirlik != double.PositiveInfinity && mesafeler[u] != double.MaxValue &&
-                        mesafeler[u] + agirlik < mesafeler[v])
+                    int neighbor = edge.ToNodeIndex;
+                    double kenarAgirligi = edge.Weight;
+
+                    if (!ziyaretEdildi[neighbor])
                     {
-                        // Eðer daha kýsa bir yol bulunduysa, mesafeyi güncelle ve yolu kaydet.
-                        mesafeler[v] = mesafeler[u] + agirlik;
-                        oncekiDugumler[v] = u;
+                        double yeniMesafe = mesafeler[currentNode] + kenarAgirligi;
+                        if (yeniMesafe < mesafeler[neighbor])
+                        {
+                            // Eski deger varsa kaldir
+                            if (!double.IsPositiveInfinity(mesafeler[neighbor]))
+                            {
+                                priorityQueue.Remove((mesafeler[neighbor], neighbor));
+                            }
+
+                            mesafeler[neighbor] = yeniMesafe;
+                            oncekiDugumler[neighbor] = currentNode;
+                            priorityQueue.Add((yeniMesafe, neighbor));
+                        }
                     }
                 }
             }
         }
 
-        /// Ziyaret edilmemiþ düðümler arasýndan en düþük mesafeye sahip olaný bulur.
-        /// Bu, algoritmanýn her adýmda hangi düðümü iþleyeceðini belirler.
-        private int EnKisaMesafeDugumuBul(double[] mesafeler, bool[] ziyaretEdildi)
+        /// <summary>
+        /// Node ID kullanarak algoritmayi calistirir
+        /// </summary>
+        public void Calistir(Dictionary<int, List<Edge>> adjacencyList, string baslangicNodeId)
         {
-            double min = double.MaxValue;
-            int minIndex = -1;
-            for (int v = 0; v < dugumSayisi; v++)
+            if (nodeIdToIndexMap == null || !nodeIdToIndexMap.ContainsKey(baslangicNodeId))
             {
-                if (!ziyaretEdildi[v] && mesafeler[v] <= min)
-                {
-                    min = mesafeler[v];
-                    minIndex = v;
-                }
+                throw new ArgumentException($"Node ID bulunamadi: {baslangicNodeId}");
             }
-            return minIndex;
+
+            int baslangicIndex = nodeIdToIndexMap[baslangicNodeId];
+            Calistir(adjacencyList, baslangicIndex);
         }
 
-        /// Algoritma çalýþtýktan sonra hesaplanan en kýsa yollarý ve mesafeleri konsola yazdýrýr.
+        /// <summary>
+        /// Algoritma calistiktan sonra hesaplanan en kisa yollari ve mesafeleri konsola yazdirir.
+        /// </summary>
         public void SonuclariYazdir()
         {
             if (mesafeler == null || oncekiDugumler == null)
             {
-                Console.WriteLine("Calistir() metodunu çaðýrmayý unutma.");
+                Console.WriteLine("Once Calistir() metodunu cagirmalisiniz.");
                 return;
             }
 
-            Console.WriteLine("\nDijkstra Algoritmasý Sonuçlarý");
+            Console.WriteLine("\nDijkstra Algoritmasi Sonuclari");
             Console.WriteLine("=================================");
-            Console.WriteLine($"Baþlangýç Düðümü: {baslangicDugumu + 1}\n");
+            Console.WriteLine($"Baslangic Dugumu: {baslangicDugumu + 1}\n");
 
             for (int i = 0; i < dugumSayisi; i++)
             {
-                Console.Write($"Hedef Düðüm: {i + 1} \t Maliyet: ");
-                if (mesafeler[i] == double.MaxValue)
+                Console.Write($"Hedef Dugum: {i + 1} \t Maliyet: ");
+                if (double.IsPositiveInfinity(mesafeler[i]))
                 {
-                    Console.WriteLine("Ulaþýlamýyor");
+                    Console.WriteLine("Ulasilamiyor");
                     continue;
                 }
-                Console.Write($"{mesafeler[i]} \t\t Yol: ");
+                Console.Write($"{mesafeler[i]:F2} \t\t Yol: ");
 
-                // Yolu yeniden oluþturmak için hedef düðümden geriye doðru gidilir.
                 Stack<int> yol = new Stack<int>();
                 int mevcutDugum = i;
                 while (mevcutDugum != -1)
@@ -114,7 +142,6 @@ namespace ConsoleApp3
                     mevcutDugum = oncekiDugumler[mevcutDugum];
                 }
 
-                // Yýðýn (Stack) sayesinde yol, baþlangýçtan hedefe doðru yazdýrýlýr.
                 bool ilk = true;
                 while (yol.Count > 0)
                 {
@@ -126,23 +153,30 @@ namespace ConsoleApp3
             }
         }
 
-        /// Sadece belirli bir hedef düðüm için sonucu yazdýrýr
+        /// <summary>
+        /// Sadece belirli bir hedef dugum icin sonucu yazdirir
+        /// </summary>
         public void SonuclariYazdir(int hedefDugum)
         {
             if (mesafeler == null || oncekiDugumler == null)
             {
-                Console.WriteLine("Calistir() metodunu çaðýrmayý unutma.");
+                Console.WriteLine("Once Calistir() metodunu cagirmalisiniz.");
                 return;
             }
-            Console.WriteLine($"\nDijkstra Algoritmasý Sonucu (Baþlangýç: {baslangicDugumu + 1}, Hedef: {hedefDugum + 1})");
-            Console.WriteLine("=================================");
-            Console.Write($"Maliyet: ");
-            if (mesafeler[hedefDugum] == double.MaxValue)
+
+            Console.WriteLine();
+            Console.WriteLine($"  Baslangic: Dugum {baslangicDugumu + 1}");
+            Console.WriteLine($"  Hedef: Dugum {hedefDugum + 1}");
+            Console.Write($"  Maliyet: ");
+
+            if (double.IsPositiveInfinity(mesafeler[hedefDugum]))
             {
-                Console.WriteLine("Ulaþýlamýyor");
+                Console.WriteLine("Ulasilamiyor");
                 return;
             }
-            Console.Write($"{mesafeler[hedefDugum]} \t Yol: ");
+
+            Console.WriteLine($"{mesafeler[hedefDugum]:F2}");
+
             Stack<int> yol = new Stack<int>();
             int mevcutDugum = hedefDugum;
             while (mevcutDugum != -1)
@@ -150,6 +184,8 @@ namespace ConsoleApp3
                 yol.Push(mevcutDugum);
                 mevcutDugum = oncekiDugumler[mevcutDugum];
             }
+
+            Console.Write($"  Yol: ");
             bool ilk = true;
             while (yol.Count > 0)
             {
@@ -158,6 +194,58 @@ namespace ConsoleApp3
                 ilk = false;
             }
             Console.WriteLine();
+        }
+
+        /// <summary>
+        /// Node ID kullanarak sonuc yazdirir
+        /// </summary>
+        public void SonuclariYazdir(string hedefNodeId)
+        {
+            if (nodeIdToIndexMap == null || !nodeIdToIndexMap.ContainsKey(hedefNodeId))
+            {
+                Console.WriteLine($"Node ID bulunamadi: {hedefNodeId}");
+                return;
+            }
+
+            int hedefIndex = nodeIdToIndexMap[hedefNodeId];
+            SonuclariYazdir(hedefIndex);
+        }
+
+        /// <summary>
+        /// Belirli bir hedefe en kisa yolu dondurur
+        /// </summary>
+        public List<int> EnKisaYoluAl(int hedefDugum)
+        {
+            if (mesafeler == null || oncekiDugumler == null)
+            {
+                throw new InvalidOperationException("Once Calistir() metodunu cagirmalisiniz.");
+            }
+
+            if (double.IsPositiveInfinity(mesafeler[hedefDugum]))
+            {
+                return null;
+            }
+
+            var yol = new List<int>();
+            int mevcutDugum = hedefDugum;
+            while (mevcutDugum != -1)
+            {
+                yol.Insert(0, mevcutDugum);
+                mevcutDugum = oncekiDugumler[mevcutDugum];
+            }
+            return yol;
+        }
+
+        /// <summary>
+        /// Belirli bir hedefe olan mesafeyi dondurur
+        /// </summary>
+        public double MesafeAl(int hedefDugum)
+        {
+            if (mesafeler == null)
+            {
+                throw new InvalidOperationException("Once Calistir() metodunu cagirmalisiniz.");
+            }
+            return mesafeler[hedefDugum];
         }
     }
 }

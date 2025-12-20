@@ -1,16 +1,15 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text;
 using System.Xml.Linq;
 using System.Globalization;
 
 namespace ConsoleApp3.Parsers
 {
-    /// <summary>
-    /// OpenDRIVE (.xodr) dosyalarını ayrıştırarak graf modeli oluşturur.
+    
+    /// OpenDRIVE (.xodr) dosyalarini ayristirarak graf modeli olusturur.
     /// Yol başlangıç/bitiş noktaları ve kavşak bağlantıları düğüm olarak modellenir.
-    /// </summary>
+    
     public class XodrParser
     {
         // Sabitler - Magic string'leri önlemek için
@@ -23,9 +22,9 @@ namespace ConsoleApp3.Parsers
 
         private readonly CultureInfo culture = CultureInfo.InvariantCulture;
 
-        /// <summary>
-        /// Yol uç noktalarını ve koordinatlarını temsil eder
-        /// </summary>
+        
+        /// Yol uc noktalarini ve koordinatlarini temsil eder
+        
         private class RoadInfo
         {
             public string RoadId { get; set; }
@@ -35,13 +34,17 @@ namespace ConsoleApp3.Parsers
             public Point EndPoint { get; set; }
             public double Length { get; set; }
             public string JunctionId { get; set; }
-            public bool IsBidirectional { get; set; }
+            
+            // Yon bilgileri - Serit analizine gore belirlenir
+            public bool CanGoForward { get; set; }  // Sag seritler (Start -> End)
+            public bool CanGoBackward { get; set; } // Sol seritler (End -> Start)
+            
             public RoadLinkInfo LinkInfo { get; set; }
         }
 
-        /// <summary>
+        
         /// Yol bağlantı bilgilerini saklar
-        /// </summary>
+        
         private class RoadLinkInfo
         {
             public LinkElementInfo Predecessor { get; set; }
@@ -83,9 +86,9 @@ namespace ConsoleApp3.Parsers
             return CreateGraphData(nodeCoords, connections);
         }
 
-        /// <summary>
+        
         /// Tüm yol bilgilerini tek geçişte ayrıştırır (performans optimizasyonu)
-        /// </summary>
+        
         private List<RoadInfo> ParseRoadInformation(List<XElement> roads)
         {
             var roadInfos = new List<RoadInfo>(roads.Count);
@@ -104,6 +107,10 @@ namespace ConsoleApp3.Parsers
 
                 if (geometries.Count == 0) continue;
 
+                // Yonleri analiz et
+                bool canForward, canBackward;
+                AnalyzeRoadDirections(road, out canForward, out canBackward);
+
                 var roadInfo = new RoadInfo
                 {
                     RoadId = roadId,
@@ -111,7 +118,8 @@ namespace ConsoleApp3.Parsers
                     EndNodeId = $"{ROAD_PREFIX}{roadId}{END_SUFFIX}",
                     Length = ParseDouble(road, "length"),
                     JunctionId = GetAttributeValue(road, "junction"),
-                    IsBidirectional = IsBidirectionalRoad(road)
+                    CanGoForward = canForward,
+                    CanGoBackward = canBackward
                 };
 
                 // Başlangıç ve bitiş koordinatlarını hesapla
@@ -133,9 +141,9 @@ namespace ConsoleApp3.Parsers
             return roadInfos;
         }
 
-        /// <summary>
+        
         /// Yol bağlantı bilgilerini parse eder
-        /// </summary>
+        
         private RoadLinkInfo ParseRoadLinkInfo(XElement linkElement)
         {
             var linkInfo = new RoadLinkInfo();
@@ -165,9 +173,9 @@ namespace ConsoleApp3.Parsers
             return linkInfo;
         }
 
-        /// <summary>
-        /// Geometrilerden yolun başlangıç ve bitiş noktalarını hesaplar
-        /// </summary>
+        
+        /// Geometrilerden yolun baslangic ve bitis noktalarini hesaplar
+        
         private void CalculateRoadEndpoints(List<XElement> geometries, out Point startPoint, out Point endPoint)
         {
             var firstGeom = geometries.First();
@@ -181,18 +189,18 @@ namespace ConsoleApp3.Parsers
             double lastLen = ParseDouble(lastGeom, "length");
             double lastHdg = ParseDouble(lastGeom, "hdg");
 
-            // Geometri tipine göre bitiş noktasını hesapla
+            // Geometri tipine gore bitis noktasini hesapla
             double endX, endY;
 
             if (lastGeom.Element("line") != null)
             {
-                // Düz çizgi için basit hesaplama
+                // Duz cizgi icin basit hesaplama
                 endX = lastX + lastLen * Math.Cos(lastHdg);
                 endY = lastY + lastLen * Math.Sin(lastHdg);
             }
             else if (lastGeom.Element("arc") != null)
             {
-                // Arc için eğri hesaplama
+                // Arc icin egri hesaplama
                 var arc = lastGeom.Element("arc");
                 double curvature = ParseDoubleFromAttribute(arc, "curvature");
 
@@ -206,14 +214,102 @@ namespace ConsoleApp3.Parsers
                 }
                 else
                 {
-                    // Curvature sıfıra yakınsa düz çizgi gibi davran
+                    // Curvature sifira yakinsa duz cizgi gibi davran
                     endX = lastX + lastLen * Math.Cos(lastHdg);
                     endY = lastY + lastLen * Math.Sin(lastHdg);
                 }
             }
+            else if (lastGeom.Element("spiral") != null)
+            {
+                // Spiral (Clothoid) icin Euler Integrasyonu ile yaklasik hesaplama
+                var spiral = lastGeom.Element("spiral");
+                double curvStart = ParseDoubleFromAttribute(spiral, "curvStart");
+                double curvEnd = ParseDoubleFromAttribute(spiral, "curvEnd");
+
+                // Euler Integrasyonu - kucuk adimlarla ilerleme
+                double x = lastX;
+                double y = lastY;
+                double h = lastHdg;
+                double s = 0;
+                double ds = 0.5; // 0.5 metrelik adimlarla hesapla (hassasiyet icin)
+
+                while (s < lastLen)
+                {
+                    if (s + ds > lastLen) ds = lastLen - s;
+
+                    // O andaki egrilik (Lineer enterpolasyon)
+                    double k = curvStart + (curvEnd - curvStart) * (s / lastLen);
+
+                    // Koordinatlari guncelle
+                    x += ds * Math.Cos(h);
+                    y += ds * Math.Sin(h);
+                    h += ds * k;
+
+                    s += ds;
+                }
+                endX = x;
+                endY = y;
+            }
+            else if (lastGeom.Element("poly3") != null)
+            {
+                // Poly3 (Kubik polinom) icin Euler Integrasyonu
+                var poly3 = lastGeom.Element("poly3");
+                double a = ParseDoubleFromAttribute(poly3, "a");
+                double b = ParseDoubleFromAttribute(poly3, "b");
+                double c = ParseDoubleFromAttribute(poly3, "c");
+                double d = ParseDoubleFromAttribute(poly3, "d");
+
+                double x = lastX;
+                double y = lastY;
+                double h = lastHdg;
+                double s = 0;
+                double ds = 0.5;
+
+                while (s < lastLen)
+                {
+                    if (s + ds > lastLen) ds = lastLen - s;
+
+                    // v(s) = a + b*s + c*s^2 + d*s^3 (lateral offset)
+                    double v = a + b * s + c * s * s + d * s * s * s;
+                    double dv = b + 2 * c * s + 3 * d * s * s; // turev
+
+                    // Koordinatlari guncelle
+                    x += ds * Math.Cos(h);
+                    y += ds * Math.Sin(h);
+                    h += Math.Atan(dv) * ds / lastLen; // yaklasik aci degisimi
+
+                    s += ds;
+                }
+                endX = x;
+                endY = y;
+            }
+            else if (lastGeom.Element("paramPoly3") != null)
+            {
+                // ParamPoly3 icin parametrik hesaplama
+                var paramPoly3 = lastGeom.Element("paramPoly3");
+                double aU = ParseDoubleFromAttribute(paramPoly3, "aU");
+                double bU = ParseDoubleFromAttribute(paramPoly3, "bU");
+                double cU = ParseDoubleFromAttribute(paramPoly3, "cU");
+                double dU = ParseDoubleFromAttribute(paramPoly3, "dU");
+                double aV = ParseDoubleFromAttribute(paramPoly3, "aV");
+                double bV = ParseDoubleFromAttribute(paramPoly3, "bV");
+                double cV = ParseDoubleFromAttribute(paramPoly3, "cV");
+                double dV = ParseDoubleFromAttribute(paramPoly3, "dV");
+                string pRange = paramPoly3.Attribute("pRange")?.Value ?? "normalized";
+
+                double p = (pRange == "arcLength") ? lastLen : 1.0;
+
+                // u(p) ve v(p) parametrik denklemler
+                double u = aU + bU * p + cU * p * p + dU * p * p * p;
+                double v = aV + bV * p + cV * p * p + dV * p * p * p;
+
+                // Lokal koordinatlari global koordinatlara donustur
+                endX = lastX + u * Math.Cos(lastHdg) - v * Math.Sin(lastHdg);
+                endY = lastY + u * Math.Sin(lastHdg) + v * Math.Cos(lastHdg);
+            }
             else
             {
-                // Diğer geometri tipleri için basit tahmin
+                // Bilinmeyen geometri tipleri icin duz cizgi tahmini
                 endX = lastX + lastLen * Math.Cos(lastHdg);
                 endY = lastY + lastLen * Math.Sin(lastHdg);
             }
@@ -221,32 +317,49 @@ namespace ConsoleApp3.Parsers
             endPoint = new Point(endX, endY, 0);
         }
 
-        /// <summary>
-        /// Yolun çift yönlü olup olmadığını kontrol eder
-        /// </summary>
-        private bool IsBidirectionalRoad(XElement road)
+       
+        /// Yolun ileri (sag seritler) ve geri (sol seritler) yon izinlerini analiz eder.
+        /// OpenDRIVE'da sag seritler (negatif ID) ileri yonu, sol seritler (pozitif ID) geri yonu temsil eder.
+       
+        private void AnalyzeRoadDirections(XElement road, out bool canGoForward, out bool canGoBackward)
         {
             var lanes = road.Element("lanes");
-            if (lanes == null) return true; // Default: çift yönlü
+            if (lanes == null)
+            {
+                // Bilgi yoksa varsayilan cift yon kabul et
+                canGoForward = true;
+                canGoBackward = true;
+                return;
+            }
 
             var laneSection = lanes.Element("laneSection");
-            if (laneSection == null) return true;
+            if (laneSection == null)
+            {
+                canGoForward = true;
+                canGoBackward = true;
+                return;
+            }
 
-            // Hem sağ hem de sol tarafta driving lane var mı?
-            bool hasRightDriving = laneSection.Element("right")?
+            // Sag tarafta (negatif ID) driving lane varsa -> Ileri (Start->End) gidilebilir
+            canGoForward = laneSection.Element("right")?
                 .Elements("lane")
                 .Any(l => GetAttributeValue(l, "type") == "driving") ?? false;
 
-            bool hasLeftDriving = laneSection.Element("left")?
+            // Sol tarafta (pozitif ID) driving lane varsa -> Geri (End->Start) gidilebilir
+            canGoBackward = laneSection.Element("left")?
                 .Elements("lane")
                 .Any(l => GetAttributeValue(l, "type") == "driving") ?? false;
 
-            return hasRightDriving && hasLeftDriving;
+            // Eger ikisi de yoksa (orn. sadece yaya yolu), guvenli varsayilan olarak ileri acilabilir
+            if (!canGoForward && !canGoBackward)
+            {
+                canGoForward = true;
+            }
         }
 
-        /// <summary>
+      
         /// Kavşak koordinatlarını bağlı yolların ortalama konumlarından hesaplar
-        /// </summary>
+        
         private Dictionary<string, Point> CalculateJunctionCoordinates(
             List<RoadInfo> roadInfos,
             List<XElement> junctions,
@@ -310,9 +423,9 @@ namespace ConsoleApp3.Parsers
 
 
 
-        /// <summary>
+        
         /// Tüm düğüm koordinatlarını tek bir dictionary'de birleştirir
-        /// </summary>
+        
         private Dictionary<string, Point> BuildNodeCoordinatesMap(List<RoadInfo> roadInfos, Dictionary<string, Point> junctionCoords)
         {
             // Toplam düğüm sayısını önceden bil (memory allocation optimizasyonu)
@@ -335,9 +448,9 @@ namespace ConsoleApp3.Parsers
             return nodeCoords;
         }
 
-        /// <summary>
+        
         /// Tüm bağlantıları oluşturur (yol içi, yollar arası, kavşak içi)
-        /// </summary>
+        
         private List<Tuple<string, string, double>> BuildConnections(
             List<RoadInfo> roadInfos,
             List<XElement> roads,
@@ -359,35 +472,43 @@ namespace ConsoleApp3.Parsers
             return connections;
         }
 
-        /// <summary>
-        /// Yol içi bağlantıları ekler (start -> end)
-        /// </summary>
+        
+        /// Yol ici baglantilari ekler - Yon izinlerine gore (ileri ve/veya geri)
+        
         private void AddIntraRoadConnections(List<Tuple<string, string, double>> connections, List<RoadInfo> roadInfos)
         {
+            int forwardCount = 0;
+            int backwardCount = 0;
+
             foreach (var roadInfo in roadInfos)
             {
-                // FIX: Kavşak içindeki bağlantı yollarını ATLA (bunlar junction'dan işlenecek)
-                // junction ID varsa VE "-1" değilse (yani gerçek bir junction ID'si varsa)
+                // Kavsak icindeki baglanti yollarini atla (Junction fonksiyonu hallediyor)
                 if (!string.IsNullOrEmpty(roadInfo.JunctionId) && roadInfo.JunctionId != JUNCTION_ID_DEFAULT)
                 {
-                    // Bu bir junction connecting road, atla
                     continue;
                 }
 
-                // İleri yön
-                connections.Add(Tuple.Create(roadInfo.StartNodeId, roadInfo.EndNodeId, roadInfo.Length));
+                // 1. Ileri Yon (Start -> End) izni varsa ekle
+                if (roadInfo.CanGoForward)
+                {
+                    connections.Add(Tuple.Create(roadInfo.StartNodeId, roadInfo.EndNodeId, roadInfo.Length));
+                    forwardCount++;
+                }
 
-                // Geri yön (çift yönlüyse)
-                if (roadInfo.IsBidirectional)
+                // 2. Geri Yon (End -> Start) izni varsa ekle
+                if (roadInfo.CanGoBackward)
                 {
                     connections.Add(Tuple.Create(roadInfo.EndNodeId, roadInfo.StartNodeId, roadInfo.Length));
+                    backwardCount++;
                 }
             }
+
+            Console.WriteLine($"Yol ici baglantilar: Ileri yon: {forwardCount}, Geri yon: {backwardCount}");
         }
 
-        /// <summary>
-        /// Yollar arası bağlantıları ekler (link predecessor/successor)
-        /// </summary>
+        
+        /// Yollar arasi baglantilari ekler - Yon izinlerine gore cift yonlu baglanti destekler
+        
         private void AddInterRoadConnections(
             List<Tuple<string, string, double>> connections,
             List<RoadInfo> roadInfos,
@@ -398,93 +519,86 @@ namespace ConsoleApp3.Parsers
             {
                 if (roadInfo.LinkInfo == null) continue;
 
+                // --- PREDECESSOR ISLEME (Yolun 'Start' ucundaki baglanti) ---
                 if (roadInfo.LinkInfo.Predecessor != null)
                 {
-                    ProcessLinkElementInfo(
-                        roadInfo.LinkInfo.Predecessor,
-                        roadInfo.StartNodeId,
-                        LINK_CONNECTION_DISTANCE,
-                        roadInfoMap,
-                        nodeCoords,
-                        connections,
-                        true);
+                    var pred = roadInfo.LinkInfo.Predecessor;
+                    string linkedNodeId = GetLinkedNodeId(pred, roadInfoMap, nodeCoords, true);
+
+                    if (linkedNodeId != null)
+                    {
+                        // Eger Ileri gidebiliyorsak: Predecessor -> Bizim Start (Giris)
+                        if (roadInfo.CanGoForward)
+                        {
+                            connections.Add(Tuple.Create(linkedNodeId, roadInfo.StartNodeId, LINK_CONNECTION_DISTANCE));
+                        }
+
+                        // Eger Geri gidebiliyorsak: Bizim Start -> Predecessor (Cikis)
+                        if (roadInfo.CanGoBackward)
+                        {
+                            connections.Add(Tuple.Create(roadInfo.StartNodeId, linkedNodeId, LINK_CONNECTION_DISTANCE));
+                        }
+                    }
                 }
 
+                // --- SUCCESSOR ISLEME (Yolun 'End' ucundaki baglanti) ---
                 if (roadInfo.LinkInfo.Successor != null)
                 {
-                    ProcessLinkElementInfo(
-                        roadInfo.LinkInfo.Successor,
-                        roadInfo.EndNodeId,
-                        LINK_CONNECTION_DISTANCE,
-                        roadInfoMap,
-                        nodeCoords,
-                        connections,
-                        false);
+                    var succ = roadInfo.LinkInfo.Successor;
+                    string linkedNodeId = GetLinkedNodeId(succ, roadInfoMap, nodeCoords, false);
+
+                    if (linkedNodeId != null)
+                    {
+                        // Eger Ileri gidebiliyorsak: Bizim End -> Successor (Cikis)
+                        if (roadInfo.CanGoForward)
+                        {
+                            connections.Add(Tuple.Create(roadInfo.EndNodeId, linkedNodeId, LINK_CONNECTION_DISTANCE));
+                        }
+
+                        // Eger Geri gidebiliyorsak: Successor -> Bizim End (Giris)
+                        if (roadInfo.CanGoBackward)
+                        {
+                            connections.Add(Tuple.Create(linkedNodeId, roadInfo.EndNodeId, LINK_CONNECTION_DISTANCE));
+                        }
+                    }
                 }
             }
         }
 
-        /// <summary>
-        /// Link element'ini işler ve uygun bağlantıyı ekler
-        /// </summary>
-        private void ProcessLinkElementInfo(
-            LinkElementInfo linkInfo,
-            string currentNodeId,
-            double connectionDistance,
-            Dictionary<string, RoadInfo> roadInfoMap,
-            Dictionary<string, Point> nodeCoords,
-            List<Tuple<string, string, double>> connections,
-            bool isPredecessor)
+        
+        /// Yardimci Metod: Baglanilacak Node ID'sini bulur
+        
+        private string GetLinkedNodeId(LinkElementInfo linkInfo, Dictionary<string, RoadInfo> roadInfoMap, 
+            Dictionary<string, Point> nodeCoords, bool isPredecessorLink)
         {
-            string elementType = linkInfo.ElementType;
-            string elementId = linkInfo.ElementId;
-            string contactPoint = linkInfo.ContactPoint;
-
-            if (string.IsNullOrEmpty(elementId)) return;
-
-            if (elementType == "road" && roadInfoMap.ContainsKey(elementId))
+            if (linkInfo.ElementType == "road" && roadInfoMap.ContainsKey(linkInfo.ElementId))
             {
-                var linkedRoadInfo = roadInfoMap[elementId];
+                var linkedRoad = roadInfoMap[linkInfo.ElementId];
 
-                string linkedNodeId;
-                if (string.IsNullOrEmpty(contactPoint))
+                // contactPoint belirtilmemisse varsayilan mantik
+                if (string.IsNullOrEmpty(linkInfo.ContactPoint))
                 {
-                    linkedNodeId = isPredecessor ? linkedRoadInfo.EndNodeId : linkedRoadInfo.StartNodeId;
-                }
-                else
-                {
-                    linkedNodeId = contactPoint == "start" ? linkedRoadInfo.StartNodeId : linkedRoadInfo.EndNodeId;
+                    // Predecessor genelde diger yolun End'ine baglanir
+                    // Successor genelde diger yolun Start'ina baglanir
+                    return isPredecessorLink ? linkedRoad.EndNodeId : linkedRoad.StartNodeId;
                 }
 
-                if (isPredecessor)
-                {
-                    connections.Add(Tuple.Create(linkedNodeId, currentNodeId, connectionDistance));
-                }
-                else
-                {
-                    connections.Add(Tuple.Create(currentNodeId, linkedNodeId, connectionDistance));
-                }
+                return linkInfo.ContactPoint == "start" ? linkedRoad.StartNodeId : linkedRoad.EndNodeId;
             }
-            else if (elementType == "junction")
+            else if (linkInfo.ElementType == "junction")
             {
-                string junctionNodeId = $"{JUNCTION_PREFIX}{elementId}";
+                string junctionNodeId = $"{JUNCTION_PREFIX}{linkInfo.ElementId}";
                 if (nodeCoords.ContainsKey(junctionNodeId))
                 {
-                    if (isPredecessor)
-                    {
-                        connections.Add(Tuple.Create(junctionNodeId, currentNodeId, connectionDistance));
-                    }
-                    else
-                    {
-                        connections.Add(Tuple.Create(currentNodeId, junctionNodeId, connectionDistance));
-                    }
+                    return junctionNodeId;
                 }
             }
+            return null;
         }
 
-        /// <summary>
-        /// Kavşak içi bağlantıları ekler
-        /// </summary>
+        
+        /// Kavsak ici baglantilari ekler - Ters yonlu baglanti yollarini da destekler
+        
         private void AddJunctionConnections(
             List<Tuple<string, string, double>> connections,
             List<XElement> junctions,
@@ -493,6 +607,7 @@ namespace ConsoleApp3.Parsers
         {
             int junctionConnectionCount = 0;
             int skippedConnections = 0;
+            int reverseTraversalCount = 0;
 
             foreach (var junction in junctions)
             {
@@ -505,7 +620,7 @@ namespace ConsoleApp3.Parsers
                 {
                     string incomingRoadId = GetAttributeValue(connection, "incomingRoad");
                     string connectingRoadId = GetAttributeValue(connection, "connectingRoad");
-                    string contactPoint = GetAttributeValue(connection, "contactPoint");
+                    string contactPoint = GetAttributeValue(connection, "contactPoint"); // "start" veya "end"
 
                     if (string.IsNullOrEmpty(incomingRoadId) || string.IsNullOrEmpty(connectingRoadId))
                     {
@@ -513,13 +628,7 @@ namespace ConsoleApp3.Parsers
                         continue;
                     }
 
-                    if (!roadInfoMap.ContainsKey(incomingRoadId))
-                    {
-                        skippedConnections++;
-                        continue;
-                    }
-
-                    if (!roadInfoMap.ContainsKey(connectingRoadId))
+                    if (!roadInfoMap.ContainsKey(incomingRoadId) || !roadInfoMap.ContainsKey(connectingRoadId))
                     {
                         skippedConnections++;
                         continue;
@@ -528,95 +637,98 @@ namespace ConsoleApp3.Parsers
                     var incomingRoadInfo = roadInfoMap[incomingRoadId];
                     var connectingRoadInfo = roadInfoMap[connectingRoadId];
 
-                    // Gelen yolun bitişi -> Bağlantı yoluna
-                    string fromId = incomingRoadInfo.EndNodeId;
+                    // --- ADIM 1: GIRIS BAGLANTISI (Incoming Road -> Connecting Road) ---
 
-                    // contactPoint, connecting road'un hangi ucunun kullanılacağını belirtir
-                    string toId;
+                    // Gelen yolun hangi ucundayiz?
+                    // Eger gelen yolun Successor'i bu kavsaksa, yolun sonunda (EndNode) bitmisizdir.
+                    // Eger gelen yolun Predecessor'i bu kavsaksa, yolun basinda (StartNode) bitmisizdir (ters yon).
+                    string fromNodeId = incomingRoadInfo.EndNodeId; // Varsayilan
+
+                    if (incomingRoadInfo.LinkInfo?.Predecessor?.ElementType == "junction" &&
+                        incomingRoadInfo.LinkInfo.Predecessor.ElementId == junctionId)
+                    {
+                        fromNodeId = incomingRoadInfo.StartNodeId;
+                    }
+                    else if (incomingRoadInfo.LinkInfo?.Successor?.ElementType == "junction" &&
+                             incomingRoadInfo.LinkInfo.Successor.ElementId == junctionId)
+                    {
+                        fromNodeId = incomingRoadInfo.EndNodeId;
+                    }
+
+                    // Baglanti yolunun hangi ucuna baglaniyoruz?
+                    string entryNodeId;
+                    string exitNodeId;
+                    bool isTraversingForward; // Yol icinde Start->End mi gidiyoruz?
+
                     if (string.IsNullOrEmpty(contactPoint) || contactPoint == "start")
                     {
-                        toId = connectingRoadInfo.StartNodeId;
+                        // Start'tan giriyoruz, End'e dogru gidecegiz (Ileri Yon)
+                        entryNodeId = connectingRoadInfo.StartNodeId;
+                        exitNodeId = connectingRoadInfo.EndNodeId;
+                        isTraversingForward = true;
                     }
-                    else
+                    else // contactPoint == "end"
                     {
-                        toId = connectingRoadInfo.EndNodeId;
+                        // End'den giriyoruz, Start'a dogru gidecegiz (Ters Yon)
+                        entryNodeId = connectingRoadInfo.EndNodeId;
+                        exitNodeId = connectingRoadInfo.StartNodeId;
+                        isTraversingForward = false;
+                        reverseTraversalCount++;
                     }
 
-                    // Incoming road -> Connecting road
-                    connections.Add(Tuple.Create(fromId, toId, LINK_CONNECTION_DISTANCE));
+                    // 1. Baglantiyi Ekle: Gelen Yol -> Baglanti Yolu Girisi
+                    connections.Add(Tuple.Create(fromNodeId, entryNodeId, LINK_CONNECTION_DISTANCE));
 
-                    // Connecting road içi
-                    connections.Add(Tuple.Create(
-                        connectingRoadInfo.StartNodeId,
-                        connectingRoadInfo.EndNodeId,
-                        connectingRoadInfo.Length));
+                    // --- ADIM 2: IC BAGLANTI (Traversing Connecting Road) ---
 
-                    // Connecting road predecessor
-                    if (connectingRoadInfo.LinkInfo != null && connectingRoadInfo.LinkInfo.Predecessor != null)
+                    // Baglanti yolunun icindeki hareketi ekle (Giris -> Cikis)
+                    connections.Add(Tuple.Create(entryNodeId, exitNodeId, connectingRoadInfo.Length));
+
+                    // --- ADIM 3: CIKIS BAGLANTISI (Connecting Road -> Next Road) ---
+
+                    // Simdi baglanti yolundan ciktik, sirada ne var?
+                    // Eger ileri (Start->End) gittiysek, siradaki yol Successor'dir.
+                    // Eger geri (End->Start) gittiysek, siradaki yol Predecessor'dir.
+
+                    LinkElementInfo nextLink = isTraversingForward
+                        ? connectingRoadInfo.LinkInfo?.Successor
+                        : connectingRoadInfo.LinkInfo?.Predecessor;
+
+                    if (nextLink != null && nextLink.ElementType == "road" && roadInfoMap.ContainsKey(nextLink.ElementId))
                     {
-                        var predecessor = connectingRoadInfo.LinkInfo.Predecessor;
+                        var nextRoadInfo = roadInfoMap[nextLink.ElementId];
 
-                        if (predecessor.ElementType == "road" && roadInfoMap.ContainsKey(predecessor.ElementId))
+                        // Siradaki yolun hangi ucuna baglaniyoruz?
+                        // nextLink.ContactPoint "start" ise StartNode'una, "end" ise EndNode'una baglanriz.
+                        string nextRoadTargetNodeId;
+
+                        if (string.IsNullOrEmpty(nextLink.ContactPoint) || nextLink.ContactPoint == "start")
                         {
-                            var prevRoadInfo = roadInfoMap[predecessor.ElementId];
-
-                            string prevNodeId;
-                            if (string.IsNullOrEmpty(predecessor.ContactPoint))
-                            {
-                                prevNodeId = prevRoadInfo.EndNodeId;
-                            }
-                            else
-                            {
-                                prevNodeId = predecessor.ContactPoint == "start" ?
-                                    prevRoadInfo.StartNodeId : prevRoadInfo.EndNodeId;
-                            }
-
-                            connections.Add(Tuple.Create(
-                                prevNodeId,
-                                connectingRoadInfo.StartNodeId,
-                                LINK_CONNECTION_DISTANCE));
+                            nextRoadTargetNodeId = nextRoadInfo.StartNodeId;
                         }
-                    }
-
-                    // Connecting road successor
-                    if (connectingRoadInfo.LinkInfo != null && connectingRoadInfo.LinkInfo.Successor != null)
-                    {
-                        var successor = connectingRoadInfo.LinkInfo.Successor;
-
-                        if (successor.ElementType == "road" && roadInfoMap.ContainsKey(successor.ElementId))
+                        else
                         {
-                            var nextRoadInfo = roadInfoMap[successor.ElementId];
-
-                            string nextNodeId;
-                            if (string.IsNullOrEmpty(successor.ContactPoint))
-                            {
-                                nextNodeId = nextRoadInfo.StartNodeId;
-                            }
-                            else
-                            {
-                                nextNodeId = successor.ContactPoint == "start" ?
-                                    nextRoadInfo.StartNodeId : nextRoadInfo.EndNodeId;
-                            }
-
-                            connections.Add(Tuple.Create(
-                                connectingRoadInfo.EndNodeId,
-                                nextNodeId,
-                                LINK_CONNECTION_DISTANCE));
+                            nextRoadTargetNodeId = nextRoadInfo.EndNodeId;
                         }
+
+                        // 3. Baglantiyi Ekle: Baglanti Yolu Cikisi -> Siradaki Yol
+                        connections.Add(Tuple.Create(exitNodeId, nextRoadTargetNodeId, LINK_CONNECTION_DISTANCE));
                     }
 
                     junctionConnectionCount++;
                 }
             }
 
-            Console.WriteLine($"Kavşak içi bağlantı sayısı: {junctionConnectionCount}");
+            Console.WriteLine($"Kavsak ici baglanti sayisi: {junctionConnectionCount}");
+            if (reverseTraversalCount > 0)
+                Console.WriteLine($"  Ters yonlu baglanti (End->Start): {reverseTraversalCount}");
             if (skippedConnections > 0)
-                Console.WriteLine($"  ??  Atlanan bağlantı: {skippedConnections}");
+                Console.WriteLine($"  Atlanan baglanti: {skippedConnections}");
         }
 
-        /// <summary>
+        
         /// İstatistikleri yazdırır
-        /// </summary>
+        
         private void PrintStatistics(int roadCount, int junctionCount, List<Tuple<string, string, double>> connections)
         {
             int roadNodeCount = roadCount * 2;
@@ -634,9 +746,9 @@ namespace ConsoleApp3.Parsers
             }
         }
 
-        /// <summary>
-        /// GraphData nesnesini oluşturur
-        /// </summary>
+        
+        /// GraphData nesnesini olusturur - Adjacency List ile (bellek verimli)
+        
         private GraphData CreateGraphData(Dictionary<string, Point> nodeCoords, List<Tuple<string, string, double>> connections)
         {
             var allNodeIds = nodeCoords.Keys.OrderBy(id => id).ToList();
@@ -653,40 +765,36 @@ namespace ConsoleApp3.Parsers
                 nodeCoordinates[i] = nodeCoords[allNodeIds[i]];
             }
 
-            var adjMatrix = new double[allNodeIds.Count, allNodeIds.Count];
-
-            for (int i = 0; i < allNodeIds.Count; i++)
-            {
-                for (int j = 0; j < allNodeIds.Count; j++)
-                {
-                    adjMatrix[i, j] = double.PositiveInfinity;
-                }
-            }
+            // Adjacency List olustur (matris yerine - bellek verimli)
+            var adjList = new Dictionary<int, List<Edge>>();
 
             foreach (var conn in connections)
             {
                 if (nodeIdToIndex.TryGetValue(conn.Item1, out int fromIdx) &&
                     nodeIdToIndex.TryGetValue(conn.Item2, out int toIdx))
                 {
-                    adjMatrix[fromIdx, toIdx] = conn.Item3;
+                    if (!adjList.ContainsKey(fromIdx))
+                        adjList[fromIdx] = new List<Edge>();
+
+                    adjList[fromIdx].Add(new Edge(toIdx, conn.Item3));
                 }
             }
 
-            return new GraphData(adjMatrix, nodeCoordinates, nodeIdToIndex);
+            return new GraphData(adjList, nodeCoordinates, nodeIdToIndex);
         }
         #region XML Parsing Helper Methods
 
-        /// <summary>
+        
         /// XML attribute değerini güvenli şekilde okur
-        /// </summary>
+       
         private string GetAttributeValue(XElement element, string attributeName)
         {
             return element?.Attribute(attributeName)?.Value ?? string.Empty;
         }
 
-        /// <summary>
+        
         /// XML attribute değerini double olarak parse eder
-        /// </summary>
+       
         private double ParseDouble(XElement element, string attributeName, double defaultValue = 0.0)
         {
             string value = GetAttributeValue(element, attributeName);
@@ -698,9 +806,9 @@ namespace ConsoleApp3.Parsers
             return defaultValue;
         }
 
-        /// <summary>
+        
         /// XAttribute'tan double değer parse eder
-        /// </summary>
+        
         private double ParseDoubleFromAttribute(XElement element, string attributeName, double defaultValue = 0.0)
         {
             var attr = element?.Attribute(attributeName);
