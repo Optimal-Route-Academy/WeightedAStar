@@ -125,8 +125,35 @@ namespace ConsoleApp3.Parsers
                 // Başlangıç ve bitiş koordinatlarını hesapla
                 Point startPt, endPt;
                 CalculateRoadEndpoints(geometries, out startPt, out endPt);
-                roadInfo.StartPoint = startPt;
-                roadInfo.EndPoint = endPt;
+
+                // Elevation profilini oku (Z koordinati icin)
+                var elevationProfile = road.Element("elevationProfile");
+                double startZ = 0;
+                double endZ = 0;
+
+                if (elevationProfile != null)
+                {
+                    var elevation = elevationProfile.Element("elevation");
+                    if (elevation != null)
+                    {
+                        // s=0 noktasindaki 'a' katsayisi baslangic yuksekligidir
+                        double a = ParseDoubleFromAttribute(elevation, "a");
+                        startZ = a;
+
+                        // Yolun sonundaki yuksekligi egime gore hesapla
+                        double b = ParseDoubleFromAttribute(elevation, "b"); // Egim (Slope)
+                        double c = ParseDoubleFromAttribute(elevation, "c"); // Quadratic katsayi
+                        double d = ParseDoubleFromAttribute(elevation, "d"); // Cubic katsayi
+                        double roadLength = roadInfo.Length;
+
+                        // Kubik polinom: z(s) = a + b*s + c*s^2 + d*s^3
+                        endZ = a + b * roadLength + c * roadLength * roadLength + d * roadLength * roadLength * roadLength;
+                    }
+                }
+
+                // Point olusturulurken Z koordinatini kullan
+                roadInfo.StartPoint = new Point(startPt.X, startPt.Y, startZ);
+                roadInfo.EndPoint = new Point(endPt.X, endPt.Y, endZ);
 
                 // Link bilgilerini parse et
                 var link = road.Element("link");
@@ -409,7 +436,8 @@ namespace ConsoleApp3.Parsers
                 {
                     double avgX = kvp.Value.Average(p => p.X);
                     double avgY = kvp.Value.Average(p => p.Y);
-                    result[kvp.Key] = new Point(avgX, avgY, 0);
+                    double avgZ = kvp.Value.Average(p => p.Z);
+                    result[kvp.Key] = new Point(avgX, avgY, avgZ);
                 }
                 else
                 {
