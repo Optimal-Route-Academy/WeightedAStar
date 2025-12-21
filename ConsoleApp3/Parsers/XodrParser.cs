@@ -636,6 +636,7 @@ namespace ConsoleApp3.Parsers
             int junctionConnectionCount = 0;
             int skippedConnections = 0;
             int reverseTraversalCount = 0;
+            int laneLinkFilteredCount = 0;
 
             foreach (var junction in junctions)
             {
@@ -660,6 +661,32 @@ namespace ConsoleApp3.Parsers
                     {
                         skippedConnections++;
                         continue;
+                    }
+
+                    // --- SERIT BAZLI GECIS KONTROLU (laneLink) ---
+                    var laneLinks = connection.Elements("laneLink").ToList();
+                    if (laneLinks.Count > 0)
+                    {
+                        // Eger laneLink tanimlanmissa, gecerli serit baglantisi var mi kontrol et
+                        bool hasDrivableLaneLink = false;
+                        foreach (var laneLink in laneLinks)
+                        {
+                            string fromLaneId = GetAttributeValue(laneLink, "from");
+                            string toLaneId = GetAttributeValue(laneLink, "to");
+                            
+                            // Gecerli bir serit baglantisi varsa (bos degilse)
+                            if (!string.IsNullOrEmpty(fromLaneId) && !string.IsNullOrEmpty(toLaneId))
+                            {
+                                hasDrivableLaneLink = true;
+                                break;
+                            }
+                        }
+                        
+                        if (!hasDrivableLaneLink)
+                        {
+                            laneLinkFilteredCount++;
+                            continue; // Gecerli serit baglantisi yoksa bu connection'i atla
+                        }
                     }
 
                     var incomingRoadInfo = roadInfoMap[incomingRoadId];
@@ -750,6 +777,8 @@ namespace ConsoleApp3.Parsers
             Console.WriteLine($"Kavsak ici baglanti sayisi: {junctionConnectionCount}");
             if (reverseTraversalCount > 0)
                 Console.WriteLine($"  Ters yonlu baglanti (End->Start): {reverseTraversalCount}");
+            if (laneLinkFilteredCount > 0)
+                Console.WriteLine($"  Serit kisitlamasi nedeniyle filtrelenen: {laneLinkFilteredCount}");
             if (skippedConnections > 0)
                 Console.WriteLine($"  Atlanan baglanti: {skippedConnections}");
         }
