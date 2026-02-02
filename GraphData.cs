@@ -87,8 +87,59 @@ namespace ConsoleApp3
             Dictionary<string, (string StartId, string EndId)> roadIdToRefIds = null,
             Dictionary<string, JunctionInfo> junctions = null)
         {
+            NodeCoordinates = nodeCoords;
+            NodeIdToIndexMap = new Dictionary<string, int>();
+            var indexToIdMap = new Dictionary<int, string>();
+
+
+            int index = 0;
+            foreach (var id in nodeCoords.Keys)
+            {
+                NodeIdToIndexMap[id] = index;
+                indexToIdMap[index]= id;
+                index++;
+            }
+            NodeCount = index;
+            NodeCoordinatesArray = new Point[NodeCount];
+            for (int i = 0; i< NodeCount; i++) 
+            {
+                NodeCoordinatesArray[i] = nodeCoords[indexToIdMap[i]];
+            }
+
+            AdjacencyList = new Dictionary<int, List<Edge>>();
+            EdgeCount = 0;
+
+            foreach (var kpv in adjListString)
+            {
+                string fromId = kpv.Key;
+                if (!NodeIdToIndexMap.ContainsKey(fromId)) continue;
+
+                int fromIndex = NodeIdToIndexMap[fromId];
+                var edges = new List<Edge>();
+
+                foreach (var edgeString in kpv.Value)
+                {
+                    if (edgeString.ToNodeId != null && NodeIdToIndexMap.ContainsKey(edgeString.ToNodeId)) 
+                    {
+                        int toIndex = NodeIdToIndexMap[edgeString.ToNodeId];
+                        var newEdge = new Edge(toIndex, edgeString.Weight);
+                        newEdge.ToNodeId = edgeString.ToNodeId;
+                        newEdge.RoadId = edgeString.RoadId;
+                        newEdge.LaneId = edgeString.LaneId;
+                        edges.Add(newEdge);
+                        EdgeCount++;
+                    }
+                }
+                if (edges.Count > 0)
+                {
+                    AdjacencyList[fromIndex] = edges;
+                }
+            }
+
             //string-tabanlı düğüm ID'lerinden integer-tabanlı indekslere dönüşüm yapan bir graf oluşturma metodudu olacaktır. Daha tamamlanmamıştır 
             BuildRoadIndexMap(roadIdToRefIds);
+            Junctions = junctions ?? new Dictionary<string, JunctionInfo>();
+            LaneNodeIndices = new Dictionary<(string, int), int>();
         }
         private void BuildRoadIndexMap(Dictionary<string, (string StartId, string EndId)> roadIdToRefIds)
         {
