@@ -141,6 +141,19 @@ namespace ConsoleApp3
             Junctions = junctions ?? new Dictionary<string, JunctionInfo>();
             LaneNodeIndices = new Dictionary<(string, int), int>();
         }
+
+        public void SetLaneNodeMapping(Dictionary<(string RoadId, int LaneId), string> mapping)
+        {
+            LaneNodeIndices = new Dictionary<(string, int), int>();
+            foreach (var kvp in mapping)
+            {
+                if (NodeIdToIndexMap.ContainsKey(kvp.Value))
+                {
+                    LaneNodeIndices[kvp.Key] = NodeIdToIndexMap[kvp.Value];
+                }
+            }
+        }
+
         private void BuildRoadIndexMap(Dictionary<string, (string StartId, string EndId)> roadIdToRefIds)
         {
             RoadIdToNodeIndices = new Dictionary<string, (int StartIndex, int EndIndex)>();
@@ -159,5 +172,35 @@ namespace ConsoleApp3
                 }
             }
         }
+
+        /// <summary>
+        /// Bir yolun (roadId) baglanabilecegi potansiyel sonraki yollari dondurur.
+        /// Hem dogrudan baglantilari hem de Junction uzerinden olan baglantilari kapsar.
+        /// </summary>
+        public List<string> GetNextPossibleRoads(string currentRoadId)
+        {
+            // ... (keep logic but it might be less relevant with lanes)
+            if (!RoadIdToNodeIndices.ContainsKey(currentRoadId)) return new List<string>();
+
+            var indices = RoadIdToNodeIndices[currentRoadId];
+            var nextRoads = new HashSet<string>();
+            var potentialExitNodes = new List<int> { indices.StartIndex, indices.EndIndex };
+
+            foreach (var nodeIdx in potentialExitNodes)
+            {
+                if (AdjacencyList.ContainsKey(nodeIdx))
+                {
+                    foreach (var edge in AdjacencyList[nodeIdx])
+                    {
+                        if (!string.IsNullOrEmpty(edge.RoadId) && edge.RoadId != currentRoadId)
+                        {
+                            nextRoads.Add(edge.RoadId);
+                        }
+                    }
+                }
+            }
+            return nextRoads.ToList();
+        }
+
     }
 }
