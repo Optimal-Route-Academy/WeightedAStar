@@ -316,10 +316,40 @@ namespace ConsoleApp3
                     return;
                 }
 
-                // Kullanicidan baslangic ve bitis dugumleri (1-based) alinir
+                // Kullanicidan Road ID ile giris al
                 Console.WriteLine("\n" + new string('-', 60));
-                int baslangicDugumu = GetNodeInput($"Baslangic dugumu (1-{graph.NodeCount}): ", graph.NodeCount) - 1;
-                int hedefDugumu = GetNodeInput($"Hedef dugumu (1-{graph.NodeCount}): ", graph.NodeCount) - 1;
+                Console.WriteLine("Lutfen giris yapin (Ornek format: 'RoadId 5, Lane 1')");
+                Console.WriteLine("Eski format (Road 12 start) hala calisir ancak Lane bilgisi onceliklidir.");
+
+                int baslangicDugumu = -1;
+                while (true)
+                {
+                    string input = GetInput("Baslangic (RoadId X, Lane Y): ");
+                    var parseResult = ParseInputWithLanes(input, graph, isTarget: false);
+
+                    if (parseResult.HasValue)
+                    {
+                        baslangicDugumu = parseResult.Value;
+                        Console.WriteLine($"   -> Baslangic noktasi ayarlandi (Node Index: {baslangicDugumu}).");
+                        break;
+                    }
+                    Console.WriteLine("   HATA: Girdi formatý hatali veya ID bulunamadi. Ornek: 'RoadId 12, Lane -1'");
+                }
+
+                int hedefDugumu = -1;
+                while (true)
+                {
+                    string input = GetInput("Hedef (RoadId X, Lane Y): ");
+                    var parseResult = ParseInputWithLanes(input, graph, isTarget: true);
+
+                    if (parseResult.HasValue)
+                    {
+                        hedefDugumu = parseResult.Value;
+                        Console.WriteLine($"   -> Hedef noktasi ayarlandi (Node Index: {hedefDugumu}).");
+                        break;
+                    }
+                    Console.WriteLine("   HATA: Girdi formatý hatali veya ID bulunamadi. Ornek: 'RoadId 12, Lane -1'");
+                }
 
                 Console.WriteLine("\n" + new string('=', 60));
                 Console.WriteLine($"ALGORITMALAR CALISTIRILIYOR");
@@ -331,7 +361,9 @@ namespace ConsoleApp3
                 Console.WriteLine("\n--- DIJKSTRA ALGORITMASI ---");
                 DijkstraAlgoritmasi dijkstra = new DijkstraAlgoritmasi(graph.NodeCount);
                 dijkstra.Calistir(graph.AdjacencyList, baslangicDugumu);
-                dijkstra.SonuclariYazdir(hedefDugumu);
+
+                // Sonuclari Road ID ile yazdir
+                PrintMapPath(dijkstra.EnKisaYoluAl(hedefDugumu), graph, dijkstra.MesafeAl(hedefDugumu));
                 Console.WriteLine(new string('-', 60));
 
                 // Agirlikli A* Algoritmasi Testleri
@@ -345,9 +377,11 @@ namespace ConsoleApp3
                 foreach (var senaryo in testSenaryolari)
                 {
                     Console.WriteLine($"\n--- A* ALGORITMASI: {senaryo.Isim} ---");
-                    AStarAlgorithm astar = new AStarAlgorithm(graph.NodeCount, graph.NodeCoordinates, senaryo.Deger);
+                    AStarAlgorithm astar = new AStarAlgorithm(graph.NodeCount, graph.NodeCoordinatesArray, senaryo.Deger);
                     astar.Calistir(graph.AdjacencyList, baslangicDugumu, hedefDugumu);
-                    astar.SonuclariYazdir();
+
+                    // Sonuclari Road ID ile yazdir
+                    PrintMapPath(astar.EnKisaYoluAl(), graph, astar.ToplamMaliyetAl());
                     Console.WriteLine(new string('-', 60));
                 }
 
@@ -401,7 +435,99 @@ namespace ConsoleApp3
             }
         }
 
-        // Dijkstra yolunu cikar
+        /// <summary>
+        /// Harita uzerindeki yolu (dugum indekslerine gore) Road ID ve Lane IDleri ile yazdirir.
+        /// </summary>
+        private static void PrintMapPath(List<int> pathIndices, GraphData graph, double totalCost)
+        {
+            if (pathIndices == null || pathIndices.Count == 0)
+            {
+                Console.WriteLine("Yol bulunamadi (Ulasilamaz).");
+                return;
+            }
+
+            Console.WriteLine($"Toplam Maliyet/Mesafe: {totalCost:F2}");
+            Console.Write("ROTA: ");
+
+            var segments = new List<string>();
+            string currentRoadId = null;
+            int currentLaneId = 0; // 0 invalid in XODR driving lanes generally
+
+            // Dugum listesini gezerek kenarlari bul ve RoadID+LaneID'leri cikar
+            for (int i = 0; i < pathIndices.Count - 1; i++)
+            {
+                int u = pathIndices[i];
+                int v = pathIndices[i + 1];
+
+                // u -> v kenarýný bul
+                if (graph.AdjacencyList.ContainsKey(u))
+                {
+                    var edge = graph.AdjacencyList[u].FirstOrDefault(e => e.ToNodeIndex == v);
+
+                    // RoadId bos ise (baglanti yolu veya sanal gecis), bir sonrakine gec
+                    if (edge != null)
+                    {
+                        // Eger RoadId varsa ve (RoadId degisti VEYA LaneId degisti)
+                        if (!string.IsNullOrEmpty(edge.RoadId))
+                        {
+                            if (edge.RoadId != currentRoadId || edge.LaneId != currentLaneId)
+                            {
+                                segments.Add($"Road {edge.RoadId}, Lane {edge.LaneId}");
+                                currentRoadId = edge.RoadId;
+                                currentLaneId = edge.LaneId;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (segments.Count > 0)
+            {
+                Console.WriteLine(string.Join(" => ", segments));
+            }
+            else
+            {
+                Console.WriteLine("(Yol secilen dugumler arasinda direct baglanti veya isimsiz segmentlerden olusuyor)");
+            }
+        }
+
+        private static int? ParseInputWithLanes(string input, GraphData graph, bool isTarget)
+        {
+            if (string.IsNullOrWhiteSpace(input)) return null;
+
+            // Format: "RoadId 5, Lane 1" case insensitive
+            // Normalize
+            string normalized = input.Trim().ToLowerInvariant();
+
+            // Try to parse "RoadId X, Lane Y"
+            try
+            {
+                // Remove prefixes
+                normalized = normalized.Replace("roadid", "").Replace("road", "").Replace("lane", "").Trim();
+
+                // Split by comma or space
+                var parts = normalized.Split(new[] { ',', ' ' }, StringSplitOptions.RemoveEmptyEntries);
+
+                if (parts.Length >= 2)
+                {
+                    string roadId = parts[0];
+                    if (int.TryParse(parts[1], out int laneId))
+                    {
+                        // Look up in LaneNodeIndices
+                        if (graph.LaneNodeIndices != null &&
+                            graph.LaneNodeIndices.TryGetValue((roadId, laneId), out int nodeIndex))
+                        {
+                            return nodeIndex;
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            // Fallback to legacy parser if specific lane format failed
+            return ParseRefInput(input, graph, isTarget);
+        }
+
         private static int[] GetPathFromDijkstra(DijkstraAlgoritmasi dijkstra, int hedef)
         {
             var path = new List<int>();
@@ -429,17 +555,75 @@ namespace ConsoleApp3
             return path.ToArray();
         }
 
-        private static int GetNodeInput(string prompt, int maxNode)
+        private static int? ParseRefInput(string input, GraphData graph, bool isTarget = false)
         {
-            int node;
-            do
+            if (string.IsNullOrWhiteSpace(input)) return null;
+            if (graph.RoadIdToNodeIndices == null) return null;
+
+            // Normalize input
+            // Format 1: "Road 12 start" -> ID: 12, Type: Start
+            // Format 2: "Road 12 end"   -> ID: 12, Type: End
+            // Format 3: "12"           -> ID: 12, Type: Default (Start if source, End if target)
+
+            string temp = input.Trim();
+            bool refStart = !isTarget; // Defaults
+
+            // Check explicit suffixes
+            if (temp.EndsWith(" start", StringComparison.OrdinalIgnoreCase))
+            {
+                refStart = true;
+                temp = temp.Substring(0, temp.Length - 6).Trim();
+            }
+            else if (temp.EndsWith(" end", StringComparison.OrdinalIgnoreCase))
+            {
+                refStart = false;
+                temp = temp.Substring(0, temp.Length - 4).Trim();
+            }
+
+            // Remove "Road" prefix if exists
+            if (temp.StartsWith("Road ", StringComparison.OrdinalIgnoreCase))
+            {
+                temp = temp.Substring(5).Trim();
+            }
+
+            // Input is now just the ID (hopefully)
+            string roadId = temp;
+
+            if (graph.RoadIdToNodeIndices.ContainsKey(roadId))
+            {
+                var indices = graph.RoadIdToNodeIndices[roadId];
+                return refStart ? indices.StartIndex : indices.EndIndex;
+            }
+
+            return null;
+        }
+
+        private static string GetInput(string prompt)
+        {
+            Console.Write(prompt);
+            return Console.ReadLine()?.Trim();
+        }
+
+        // YARDIMCI METOT
+        private static string GetNodeIdInput(string prompt, GraphData graph)
+        {
+            while (true)
             {
                 Console.Write(prompt);
-                string input = Console.ReadLine();
-                if (int.TryParse(input, out node) && node >= 1 && node <= maxNode)
-                    return node;
-                Console.WriteLine($"Gecersiz giris! 1 ile {maxNode} arasinda bir sayi girin.");
-            } while (true);
+                string input = Console.ReadLine()?.Trim();
+
+                // 1. Direkt girilen ID var mi? (orn: "road:55:start")
+                if (graph.NodeCoordinates.ContainsKey(input))
+                    return input;
+
+                // 2. Kullanici kisa yol (orn: 55) girdiyse biz tamamlayalim
+                string tryStart = $"road:{input}:start";
+                if (graph.NodeCoordinates.ContainsKey(tryStart))
+                    return tryStart;
+
+                Console.WriteLine("Gecersiz ID! Lutfen tekrar deneyin.");
+            }
         }
+        
     }
 }
