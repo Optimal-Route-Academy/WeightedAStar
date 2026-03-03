@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Xml.Linq;
 using ConsoleApp3.Utils;
+using ConsoleApp3;
 
 namespace ConsoleApp3.Parsers
 {
@@ -143,7 +144,10 @@ namespace ConsoleApp3.Parsers
                         // Sadece ters yon
                         if (!adjacencyList.ContainsKey(toIdx))
                             adjacencyList[toIdx] = new List<Edge>();
-                        adjacencyList[toIdx].Add(new Edge(fromIdx, distance));
+                        
+                        var edge = new Edge(fromIdx, distance);
+                        edge.RoadId = way.Attribute("id")?.Value;
+                        adjacencyList[toIdx].Add(edge);
                         totalEdgeCount++;
                     }
                     else if (isOneWayForward)
@@ -151,19 +155,30 @@ namespace ConsoleApp3.Parsers
                         // Sadece ileri yon
                         if (!adjacencyList.ContainsKey(fromIdx))
                             adjacencyList[fromIdx] = new List<Edge>();
-                        adjacencyList[fromIdx].Add(new Edge(toIdx, distance));
+                        
+                        var edge = new Edge(toIdx, distance);
+                        edge.RoadId = way.Attribute("id")?.Value;
+                        adjacencyList[fromIdx].Add(edge);
                         totalEdgeCount++;
                     }
                     else // isTwoWay
                     {
+                        string wayId = way.Attribute("id")?.Value;
+                        
                         // Cift yon
                         if (!adjacencyList.ContainsKey(fromIdx))
                             adjacencyList[fromIdx] = new List<Edge>();
-                        adjacencyList[fromIdx].Add(new Edge(toIdx, distance));
+                        
+                        var edge1 = new Edge(toIdx, distance);
+                        edge1.RoadId = wayId;
+                        adjacencyList[fromIdx].Add(edge1);
 
                         if (!adjacencyList.ContainsKey(toIdx))
                             adjacencyList[toIdx] = new List<Edge>();
-                        adjacencyList[toIdx].Add(new Edge(fromIdx, distance));
+                        
+                        var edge2 = new Edge(fromIdx, distance);
+                        edge2.RoadId = wayId;
+                        adjacencyList[toIdx].Add(edge2);
                         totalEdgeCount += 2;
                     }
                 }
@@ -176,7 +191,25 @@ namespace ConsoleApp3.Parsers
                 Console.WriteLine($"  (Roundabout/Motorway implicit tek yon: {implicitOneWayCount})");
             }
 
-            return new GraphData(adjacencyList, coordinates, nodeIdToIndex);
+            // Road Mapping olustur (Way ID -> Start/End Refs)
+            var wayMapping = new Dictionary<string, (string StartId, string EndId)>();
+            foreach (var way in highways)
+            {
+                string wayId = way.Attribute("id")?.Value;
+                if(string.IsNullOrEmpty(wayId)) continue;
+
+                var refs = way.Elements(ns + "nd")
+                              .Select(nd => nd.Attribute("ref")?.Value)
+                              .Where(r => !string.IsNullOrEmpty(r) && nodeCoords.ContainsKey(r))
+                              .ToList();
+
+                if (refs.Count >= 2)
+                {
+                    wayMapping[wayId] = (refs.First(), refs.Last());
+                }
+            }
+
+            return new GraphData(adjacencyList, coordinates, nodeIdToIndex, wayMapping);
         }
     }
 }
