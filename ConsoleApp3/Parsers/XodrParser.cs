@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Xml.Linq;
 using System.Globalization;
+using ConsoleApp3;
 
 namespace ConsoleApp3.Parsers
 {
@@ -40,11 +41,30 @@ namespace ConsoleApp3.Parsers
             public bool CanGoBackward { get; set; } // Sol seritler (End -> Start)
             
             public RoadLinkInfo LinkInfo { get; set; }
+
+            // Yeni: Serit nesnelerini tutar
+            public List<LaneInfo> Lanes { get; set; } = new List<LaneInfo>();
+
         }
 
-        
+        // Yeni: Serit bilgilerini tutar
+        private class LaneInfo
+        {
+            public int LaneId { get; set; }
+            public string Type { get; set; }
+            public LaneLinkInfo Link { get; set; }
+            public bool IsDrivable => Type == "driving";
+        }
+
+        // Yeni: Serit baglanti bilgileri
+        private class LaneLinkInfo
+        {
+            public List<int> PredecessorIds { get; set; } = new List<int>();
+            public List<int> SuccessorIds { get; set; } = new List<int>();
+        }
+
         /// Yol bağlantı bilgilerini saklar
-        
+
         private class RoadLinkInfo
         {
             public LinkElementInfo Predecessor { get; set; }
@@ -74,16 +94,63 @@ namespace ConsoleApp3.Parsers
             var junctionCoords = CalculateJunctionCoordinates(roadInfos, junctions, roads);
 
             // 3. Adım: Tüm düğüm koordinatlarını birleştir
+            // NOT: Serit bazli modelde dugumler seritlerin kendisi veya uclari olacak.
+            // Simdilik mevcut yapiyi koruyarak serit baglantilarini ekleyelim.
             var nodeCoords = BuildNodeCoordinatesMap(roadInfos, junctionCoords);
 
-            // 4. Adım: Bağlantıları oluştur
+            // 4. Adım: Bağlantıları oluştur (Artik Serit Bazli)
             var connections = BuildConnections(roadInfos, roads, junctions, nodeCoords);
 
             // 5. Adım: İstatistikleri yazdır
             PrintStatistics(roadInfos.Count, junctionCoords.Count, connections);
 
+            // Road mapping olustur
+            var roadMapping = roadInfos.ToDictionary(
+                r => r.RoadId,
+                r => (StartId: r.StartNodeId, EndId: r.EndNodeId));
+            
+            // Junction mapping olustur
+            var junctionMapping = new Dictionary<string, JunctionInfo>();
+            foreach (var junc in junctions)
+            {
+                string id = GetAttributeValue(junc, "id");
+                if (string.IsNullOrEmpty(id)) continue;
+                
+                var info = new JunctionInfo { Id = id };
+                
+                foreach (var conn in junc.Elements("connection"))
+                {
+                    string incoming = GetAttributeValue(conn, "incomingRoad");
+                    string connecting = GetAttributeValue(conn, "connectingRoad");
+                    
+                    if (!string.IsNullOrEmpty(incoming) && !string.IsNullOrEmpty(connecting))
+                    {
+                        if (!info.Connections.ContainsKey(incoming))
+                            info.Connections[incoming] = new List<string>();
+                        
+                        info.Connections[incoming].Add(connecting);
+                    }
+                }
+                junctionMapping[id] = info;
+            }
+
+            // Lane mapping olustur (RoadId, LaneId -> Node ID map)
+            var laneMapping = new Dictionary<(string, int), string>();
+            
+            foreach(var road in roadInfos)
+            {
+                foreach(var lane in road.Lanes)
+                {
+                    bool isRightLane = lane.LaneId < 0;
+                    bool useStartNodeAsEntry = isRightLane; 
+                    string nodeId = GetLaneNodeId(road.RoadId, lane.LaneId, useStartNodeAsEntry);
+                    laneMapping[(road.RoadId, lane.LaneId)] = nodeId;
+                }
+            }
+
+
             // 6. Adım: GraphData nesnesini oluştur ve döndür
-            return CreateGraphData(nodeCoords, connections);
+            return CreateGraphData(nodeCoords, connections, roadMapping, junctionMapping, laneMapping);
         }
 
         
@@ -162,15 +229,71 @@ namespace ConsoleApp3.Parsers
                     roadInfo.LinkInfo = ParseRoadLinkInfo(link);
                 }
 
+                // SERITLERI PARSE ET
+                var lanes = road.Element("lanes");
+                if (lanes != null)
+                {
+                    // Genelde son laneSection gecerlidir ama karmasik yollarda birden cok olabilir.
+                    // Basitlik icin tum laneSection'lardaki unique lane'leri alalim veya sadece ilk/son.
+                    // XODR standardinda serit sayisi degisebilir.
+                    // Biz en genis/kapsamli olani veya herbirini ayri segment gibi dusunmalıyız.
+                    // Proje kapsami geregi genellikle tek bir laneSection varsayalim veya hepsini birlestirelim.
+
+                    var laneSections = lanes.Elements("laneSection").ToList();
+                    foreach (var ls in laneSections)
+                    {
+                        // Sol (-), Sag (+)? Hayir: XODR'da Sol (+), Sag (-)
+                        // left elements
+                        var left = ls.Element("left");
+                        if (left != null) ParseLanes(left, roadInfo, 1); // Positive IDs
+
+                        var right = ls.Element("right");
+                        if (right != null) ParseLanes(right, roadInfo, -1); // Negative IDs
+                    }
+                }
+
+
                 roadInfos.Add(roadInfo);
             }
 
             return roadInfos;
         }
 
-        
+        private void ParseLanes(XElement sideElement, RoadInfo roadInfo, int sign)
+        {
+            var laneElements = sideElement.Elements("lane");
+            foreach (var lane in laneElements)
+            {
+                int id = (int)ParseDoubleFromAttribute(lane, "id"); // int olmali
+                string type = GetAttributeValue(lane, "type");
+
+                // Sadece driving seritlerini al
+                if (type != "driving") continue;
+
+                var lInfo = new LaneInfo
+                {
+                    LaneId = id,
+                    Type = type,
+                    Link = new LaneLinkInfo()
+                };
+
+                var link = lane.Element("link");
+                if (link != null)
+                {
+                    var preds = link.Elements("predecessor");
+                    foreach (var p in preds) lInfo.Link.PredecessorIds.Add((int)ParseDoubleFromAttribute(p, "id"));
+
+                    var succs = link.Elements("successor");
+                    foreach (var s in succs) lInfo.Link.SuccessorIds.Add((int)ParseDoubleFromAttribute(s, "id"));
+                }
+
+                roadInfo.Lanes.Add(lInfo);
+            }
+        }
+
+
         /// Yol bağlantı bilgilerini parse eder
-        
+
         private RoadLinkInfo ParseRoadLinkInfo(XElement linkElement)
         {
             var linkInfo = new RoadLinkInfo();
@@ -457,14 +580,35 @@ namespace ConsoleApp3.Parsers
         private Dictionary<string, Point> BuildNodeCoordinatesMap(List<RoadInfo> roadInfos, Dictionary<string, Point> junctionCoords)
         {
             // Toplam düğüm sayısını önceden bil (memory allocation optimizasyonu)
-            int totalNodes = (roadInfos.Count * 2) + junctionCoords.Count;
-            var nodeCoords = new Dictionary<string, Point>(totalNodes);
+            // Her serit icin giris ve cikis dugumu olusturacagiz.
+            // Junctionlar da dugum olarak kalabilir veya serit uclari junction'da birlesebilir.
+            var nodeCoords = new Dictionary<string, Point>();
 
-            // Yol düğümlerini ekle
             foreach (var roadInfo in roadInfos)
             {
+                // Road level nodes (fallback/legacy)
                 nodeCoords[roadInfo.StartNodeId] = roadInfo.StartPoint;
                 nodeCoords[roadInfo.EndNodeId] = roadInfo.EndPoint;
+
+                // Lane level nodes
+                foreach (var lane in roadInfo.Lanes)
+                {
+                    // Unique Node IDs for Lane Ends
+                    string laneStartId = GetLaneNodeId(roadInfo.RoadId, lane.LaneId, true);
+                    string laneEndId = GetLaneNodeId(roadInfo.RoadId, lane.LaneId, false);
+
+                    // Koordinatlar: Road'un Start/End pointleri ile ayni kabul ediyoruz (basitlestirilmis).
+                    // Gercekte yanal ofset vardir ama topoloji icin bu yeterli.
+                    // Lane yonune gore Start/End atamasi yapmaliyiz:
+                    // Right lanes (negative): Start -> End yönünde gider. Giris=StartPoint, Cikis=EndPoint.
+                    // Left lanes (positive): End -> Start yönünde gider. Giris=EndPoint, Cikis=StartPoint.
+                    // ANCAK: Biz "StartNodeId" ve "EndNodeId" terimlerini topolojik olarak degil, geometrik olarak kullanalim.
+                    // Yani road geometriesindeki s=0 noktasi "Start", s=L noktasi "End".
+                    // Baglantilari kurarken yonu dikkate alacagiz.
+
+                    nodeCoords[laneStartId] = roadInfo.StartPoint;
+                    nodeCoords[laneEndId] = roadInfo.EndPoint;
+                }
             }
 
             // Kavşak düğümlerini ekle
@@ -476,317 +620,181 @@ namespace ConsoleApp3.Parsers
             return nodeCoords;
         }
 
-        
+        private string GetLaneNodeId(string roadId, int laneId, bool isStart)
+        {
+            return $"road:{roadId}:lane:{laneId}:{(isStart ? "start" : "end")}";
+        }
+
         /// Tüm bağlantıları oluşturur (yol içi, yollar arası, kavşak içi)
-        
-        private List<Tuple<string, string, double>> BuildConnections(
+
+        private List<Tuple<string, string, double, string, int>> BuildConnections(
             List<RoadInfo> roadInfos,
             List<XElement> roads,
             List<XElement> junctions,
             Dictionary<string, Point> nodeCoords)
         {
-            var connections = new List<Tuple<string, string, double>>();
+            // Tuple: FromNode, ToNode, Weight, RoadId, LaneId
+            var connections = new List<Tuple<string, string, double, string, int>>();
             var roadInfoMap = roadInfos.ToDictionary(r => r.RoadId);
 
-            // 1. Yol içi bağlantılar (start -> end)
-            AddIntraRoadConnections(connections, roadInfos);
+            // 1. Yol içi bağlantılar (Lane Start geometry -> Lane End geometry)
+            AddIntraLaneConnections(connections, roadInfos);
 
             // 2. Yollar arası bağlantılar (predecessor/successor)
-            AddInterRoadConnections(connections, roadInfos, roadInfoMap, nodeCoords);
+            AddInterLaneConnections(connections, roadInfos, roadInfoMap);
 
             // 3. Kavşak içi bağlantılar
-            AddJunctionConnections(connections, junctions, roadInfoMap, roads);
+            AddJunctionLaneConnections(connections, junctions, roadInfoMap);
 
             return connections;
         }
 
-        
-        /// Yol ici baglantilari ekler - Yon izinlerine gore (ileri ve/veya geri)
-        
-        private void AddIntraRoadConnections(List<Tuple<string, string, double>> connections, List<RoadInfo> roadInfos)
+        private void AddIntraLaneConnections(List<Tuple<string, string, double, string, int>> connections, List<RoadInfo> roadInfos)
         {
-            int forwardCount = 0;
-            int backwardCount = 0;
-
-            foreach (var roadInfo in roadInfos)
+            foreach (var road in roadInfos)
             {
-                // Kavsak icindeki baglanti yollarini atla (Junction fonksiyonu hallediyor)
-                if (!string.IsNullOrEmpty(roadInfo.JunctionId) && roadInfo.JunctionId != JUNCTION_ID_DEFAULT)
+                if (!string.IsNullOrEmpty(road.JunctionId) && road.JunctionId != "-1") continue; // Junction yollarini ayri isle
+
+                foreach (var lane in road.Lanes)
                 {
-                    continue;
-                }
+                    string startNode = GetLaneNodeId(road.RoadId, lane.LaneId, true);
+                    string endNode = GetLaneNodeId(road.RoadId, lane.LaneId, false);
 
-                // 1. Ileri Yon (Start -> End) izni varsa ekle
-                if (roadInfo.CanGoForward)
-                {
-                    connections.Add(Tuple.Create(roadInfo.StartNodeId, roadInfo.EndNodeId, roadInfo.Length));
-                    forwardCount++;
-                }
-
-                // 2. Geri Yon (End -> Start) izni varsa ekle
-                if (roadInfo.CanGoBackward)
-                {
-                    connections.Add(Tuple.Create(roadInfo.EndNodeId, roadInfo.StartNodeId, roadInfo.Length));
-                    backwardCount++;
-                }
-            }
-
-            Console.WriteLine($"Yol ici baglantilar: Ileri yon: {forwardCount}, Geri yon: {backwardCount}");
-        }
-
-        
-        /// Yollar arasi baglantilari ekler - Yon izinlerine gore cift yonlu baglanti destekler
-        
-        private void AddInterRoadConnections(
-            List<Tuple<string, string, double>> connections,
-            List<RoadInfo> roadInfos,
-            Dictionary<string, RoadInfo> roadInfoMap,
-            Dictionary<string, Point> nodeCoords)
-        {
-            foreach (var roadInfo in roadInfos)
-            {
-                if (roadInfo.LinkInfo == null) continue;
-
-                // --- PREDECESSOR ISLEME (Yolun 'Start' ucundaki baglanti) ---
-                if (roadInfo.LinkInfo.Predecessor != null)
-                {
-                    var pred = roadInfo.LinkInfo.Predecessor;
-                    string linkedNodeId = GetLinkedNodeId(pred, roadInfoMap, nodeCoords, true);
-
-                    if (linkedNodeId != null)
+                    // Right Lane (Negative): Geometrik Start -> Geometrik End (Forward)
+                    if (lane.LaneId < 0)
                     {
-                        // Eger Ileri gidebiliyorsak: Predecessor -> Bizim Start (Giris)
-                        if (roadInfo.CanGoForward)
-                        {
-                            connections.Add(Tuple.Create(linkedNodeId, roadInfo.StartNodeId, LINK_CONNECTION_DISTANCE));
-                        }
-
-                        // Eger Geri gidebiliyorsak: Bizim Start -> Predecessor (Cikis)
-                        if (roadInfo.CanGoBackward)
-                        {
-                            connections.Add(Tuple.Create(roadInfo.StartNodeId, linkedNodeId, LINK_CONNECTION_DISTANCE));
-                        }
+                        connections.Add(Tuple.Create(startNode, endNode, road.Length, road.RoadId, lane.LaneId));
                     }
-                }
-
-                // --- SUCCESSOR ISLEME (Yolun 'End' ucundaki baglanti) ---
-                if (roadInfo.LinkInfo.Successor != null)
-                {
-                    var succ = roadInfo.LinkInfo.Successor;
-                    string linkedNodeId = GetLinkedNodeId(succ, roadInfoMap, nodeCoords, false);
-
-                    if (linkedNodeId != null)
+                    // Left Lane (Positive): Geometrik End -> Geometrik Start (Backward)
+                    else if (lane.LaneId > 0)
                     {
-                        // Eger Ileri gidebiliyorsak: Bizim End -> Successor (Cikis)
-                        if (roadInfo.CanGoForward)
-                        {
-                            connections.Add(Tuple.Create(roadInfo.EndNodeId, linkedNodeId, LINK_CONNECTION_DISTANCE));
-                        }
-
-                        // Eger Geri gidebiliyorsak: Successor -> Bizim End (Giris)
-                        if (roadInfo.CanGoBackward)
-                        {
-                            connections.Add(Tuple.Create(linkedNodeId, roadInfo.EndNodeId, LINK_CONNECTION_DISTANCE));
-                        }
+                        connections.Add(Tuple.Create(endNode, startNode, road.Length, road.RoadId, lane.LaneId));
                     }
                 }
             }
         }
 
-        
-        /// Yardimci Metod: Baglanilacak Node ID'sini bulur
-        
-        private string GetLinkedNodeId(LinkElementInfo linkInfo, Dictionary<string, RoadInfo> roadInfoMap, 
-            Dictionary<string, Point> nodeCoords, bool isPredecessorLink)
+        private void AddInterLaneConnections(
+             List<Tuple<string, string, double, string, int>> connections,
+             List<RoadInfo> roadInfos,
+             Dictionary<string, RoadInfo> roadInfoMap)
         {
-            if (linkInfo.ElementType == "road" && roadInfoMap.ContainsKey(linkInfo.ElementId))
+            foreach (var road in roadInfos)
             {
-                var linkedRoad = roadInfoMap[linkInfo.ElementId];
-
-                // contactPoint belirtilmemisse varsayilan mantik
-                if (string.IsNullOrEmpty(linkInfo.ContactPoint))
+                foreach (var lane in road.Lanes)
                 {
-                    // Predecessor genelde diger yolun End'ine baglanir
-                    // Successor genelde diger yolun Start'ina baglanir
-                    return isPredecessorLink ? linkedRoad.EndNodeId : linkedRoad.StartNodeId;
-                }
+                    // Şeridin akış yönündeki ÇIKIŞ düğümü hangisi?
+                    // Right(Neg) -> EndNodeId, Left(Pos) -> StartNodeId
+                    string myExitNodeId = GetLaneNodeId(road.RoadId, lane.LaneId, lane.LaneId < 0 ? false : true);
+                    
+                    // Şeridin akış yönündeki SONRAKI yola/şeride bağlantısı var mı?
+                    // Right Lane: Giderken Successor road'a bakar.
+                    // Left Lane: Giderken Predecessor road'a bakar (çünkü ters yönde ilerliyor).
 
-                return linkInfo.ContactPoint == "start" ? linkedRoad.StartNodeId : linkedRoad.EndNodeId;
-            }
-            else if (linkInfo.ElementType == "junction")
-            {
-                string junctionNodeId = $"{JUNCTION_PREFIX}{linkInfo.ElementId}";
-                if (nodeCoords.ContainsKey(junctionNodeId))
-                {
-                    return junctionNodeId;
+                    LinkElementInfo nextRoadLink = (lane.LaneId < 0) ? road.LinkInfo?.Successor : road.LinkInfo?.Predecessor;
+
+                    if (nextRoadLink != null && nextRoadLink.ElementType == "road" && roadInfoMap.ContainsKey(nextRoadLink.ElementId))
+                    {
+                        var nextRoad = roadInfoMap[nextRoadLink.ElementId];
+                        
+                        // Hangi şeritlere bağlanıyoruz? Lane Link bilgisini kullan.
+                        // Lane successor/predecessor ID'leri.
+                        // Right Lane (Neg) -> Lane Successor Ids
+                        // Left Lane (Pos) -> Lane Predecessor Ids
+                        // DIKKAT: XODR lane link yönü kafa karıştırıcıdır. 
+                        // Genelde "successor" elementi, yolun successor ucundaki şeridi gösterir.
+                        // "predecessor" elementi, yolun predecessor ucundaki şeridi gösterir.
+
+                        List<int> targetLaneIds = new List<int>();
+                        // Biz geometrik olarak Successor ucuna gidiyorsak (Right Lane), lane'in successor linkine bakariz.
+                        if (lane.LaneId < 0 && lane.Link != null) targetLaneIds.AddRange(lane.Link.SuccessorIds);
+                        
+                        // Biz geometrik olarak Predecessor ucuna gidiyorsak (Left Lane), lane'in predecessor linkine bakariz.
+                        if (lane.LaneId > 0 && lane.Link != null) targetLaneIds.AddRange(lane.Link.PredecessorIds);
+
+                        foreach (var targetLaneId in targetLaneIds)
+                        {
+                            // Target Lane'in GIRIS dugumunu bulmaliyiz.
+                            // Target Lane Id < 0 (Right) ise Giris = StartNode
+                            // Target Lane Id > 0 (Left) ise Giris = EndNode
+                            string targetEntryNodeId = GetLaneNodeId(nextRoad.RoadId, targetLaneId, targetLaneId < 0 ? true : false);
+                            
+                            // Bağlantıyı ekle (Weight = 0 veya çok küçük)
+                            connections.Add(Tuple.Create(myExitNodeId, targetEntryNodeId, LINK_CONNECTION_DISTANCE, (string)null, 0));
+                        }
+                    }
                 }
             }
-            return null;
         }
-
         
-        /// Kavsak ici baglantilari ekler - Ters yonlu baglanti yollarini da destekler
-        
-        private void AddJunctionConnections(
-            List<Tuple<string, string, double>> connections,
+        private void AddJunctionLaneConnections(
+            List<Tuple<string, string, double, string, int>> connections,
             List<XElement> junctions,
-            Dictionary<string, RoadInfo> roadInfoMap,
-            List<XElement> roads)
+            Dictionary<string, RoadInfo> roadInfoMap)
         {
-            int junctionConnectionCount = 0;
-            int skippedConnections = 0;
-            int reverseTraversalCount = 0;
-            int laneLinkFilteredCount = 0;
-
             foreach (var junction in junctions)
             {
-                string junctionId = GetAttributeValue(junction, "id");
-                if (string.IsNullOrEmpty(junctionId)) continue;
-
-                var junctionConnections = junction.Elements("connection").ToList();
-
-                foreach (var connection in junctionConnections)
+                var connectionElements = junction.Elements("connection");
+                foreach (var conn in connectionElements)
                 {
-                    string incomingRoadId = GetAttributeValue(connection, "incomingRoad");
-                    string connectingRoadId = GetAttributeValue(connection, "connectingRoad");
-                    string contactPoint = GetAttributeValue(connection, "contactPoint"); // "start" veya "end"
+                    string incomingRoadId = GetAttributeValue(conn, "incomingRoad");
+                    string connectingRoadId = GetAttributeValue(conn, "connectingRoad");
+                    string contactPoint = GetAttributeValue(conn, "contactPoint");
 
-                    if (string.IsNullOrEmpty(incomingRoadId) || string.IsNullOrEmpty(connectingRoadId))
-                    {
-                        skippedConnections++;
-                        continue;
-                    }
+                    if (!roadInfoMap.ContainsKey(incomingRoadId) || !roadInfoMap.ContainsKey(connectingRoadId)) continue;
 
-                    if (!roadInfoMap.ContainsKey(incomingRoadId) || !roadInfoMap.ContainsKey(connectingRoadId))
-                    {
-                        skippedConnections++;
-                        continue;
-                    }
+                    var incomingRoad = roadInfoMap[incomingRoadId];
+                    var connectingRoad = roadInfoMap[connectingRoadId];
 
-                    // --- SERIT BAZLI GECIS KONTROLU (laneLink) ---
-                    var laneLinks = connection.Elements("laneLink").ToList();
-                    if (laneLinks.Count > 0)
+                    var laneLinks = conn.Elements("laneLink");
+                    foreach (var link in laneLinks)
                     {
-                        // Eger laneLink tanimlanmissa, gecerli serit baglantisi var mi kontrol et
-                        bool hasDrivableLaneLink = false;
-                        foreach (var laneLink in laneLinks)
-                        {
-                            string fromLaneId = GetAttributeValue(laneLink, "from");
-                            string toLaneId = GetAttributeValue(laneLink, "to");
-                            
-                            // Gecerli bir serit baglantisi varsa (bos degilse)
-                            if (!string.IsNullOrEmpty(fromLaneId) && !string.IsNullOrEmpty(toLaneId))
-                            {
-                                hasDrivableLaneLink = true;
-                                break;
-                            }
-                        }
+                        int fromLaneId = (int)ParseDoubleFromAttribute(link, "from");
+                        int toLaneId = (int)ParseDoubleFromAttribute(link, "to");
+
+                        // 1. Incoming Road Lane Exit -> Connecting Road Lane Entry
+                        string incomingExitNodeId = GetLaneNodeId(incomingRoadId, fromLaneId, fromLaneId < 0 ? false : true);
                         
-                        if (!hasDrivableLaneLink)
-                        {
-                            laneLinkFilteredCount++;
-                            continue; // Gecerli serit baglantisi yoksa bu connection'i atla
-                        }
+                        // Bağlantı yolunun giriş düğümü. 
+                        // contactPoint "start" ise connecting Road'un başına bağlanıyoruz.
+                        // Eğer connecting road içinde forward (right lane) gidiyorsak giriş START.
+                        // Eğer connecting road içinde backward (left lane) gidiyorsak giriş END.
+                        // AMA: Junction connecting roads genelde tek yönlüdür ve sürüş yönü tanımlıdır.
+                        // Basit mantık: Contact point ne diyorsa o uçtan giriyoruz.
+                        bool contactIsStart = (contactPoint != "end"); // Default start
+                        
+                        // Connecting road'un lane'i (toLaneId).
+                        // Eğer toLaneId < 0 (Right) ise akış Start->End.
+                        // Eğer toLaneId > 0 (Left) ise akış End->Start.
+                        
+                        // Connecting Road üzerinde hareket:
+                        // "Start" ucundan girdiysek ve "Right" (Neg) şeritteysek: Flow uyumlu. Entry=Start.
+                        // "Start" ucundan girdiysek ve "Left" (Pos) şeritteysek: Flow ters? (Genelde olmaz, kavşak içi yollar tek yönlüdür).
+                        
+                        // Daha sağlam mantık:
+                        // Connecting Road'un giriş geometrik ucu: contactIsStart ? Start : End.
+                        string connectingEntryNodeId = GetLaneNodeId(connectingRoadId, toLaneId, contactIsStart);
+                        
+                        connections.Add(Tuple.Create(incomingExitNodeId, connectingEntryNodeId, LINK_CONNECTION_DISTANCE, (string)null, 0));
+
+                        // 2. Connecting Road İçi Hareket
+                        // Connecting road'un çıkış ucu: connectionStart'ın tersi.
+                        string connectingExitNodeId = GetLaneNodeId(connectingRoadId, toLaneId, !contactIsStart);
+                        
+                        // Connecting road edge'i ekle
+                        connections.Add(Tuple.Create(connectingEntryNodeId, connectingExitNodeId, connectingRoad.Length, connectingRoadId, toLaneId));
+
+                        // 3. Connecting Road Exit -> Next Road Entry
+                        // Bu kısım normal InterLaneConnections tarafından halledilmeli çünkü connecting road normal bir road entitysi.
+                        // Onun successor/predecessor linkleri parse edildiğinde otomatik bağlanacak.
                     }
-
-                    var incomingRoadInfo = roadInfoMap[incomingRoadId];
-                    var connectingRoadInfo = roadInfoMap[connectingRoadId];
-
-                    // --- ADIM 1: GIRIS BAGLANTISI (Incoming Road -> Connecting Road) ---
-
-                    // Gelen yolun hangi ucundayiz?
-                    // Eger gelen yolun Successor'i bu kavsaksa, yolun sonunda (EndNode) bitmisizdir.
-                    // Eger gelen yolun Predecessor'i bu kavsaksa, yolun basinda (StartNode) bitmisizdir (ters yon).
-                    string fromNodeId = incomingRoadInfo.EndNodeId; // Varsayilan
-
-                    if (incomingRoadInfo.LinkInfo?.Predecessor?.ElementType == "junction" &&
-                        incomingRoadInfo.LinkInfo.Predecessor.ElementId == junctionId)
-                    {
-                        fromNodeId = incomingRoadInfo.StartNodeId;
-                    }
-                    else if (incomingRoadInfo.LinkInfo?.Successor?.ElementType == "junction" &&
-                             incomingRoadInfo.LinkInfo.Successor.ElementId == junctionId)
-                    {
-                        fromNodeId = incomingRoadInfo.EndNodeId;
-                    }
-
-                    // Baglanti yolunun hangi ucuna baglaniyoruz?
-                    string entryNodeId;
-                    string exitNodeId;
-                    bool isTraversingForward; // Yol icinde Start->End mi gidiyoruz?
-
-                    if (string.IsNullOrEmpty(contactPoint) || contactPoint == "start")
-                    {
-                        // Start'tan giriyoruz, End'e dogru gidecegiz (Ileri Yon)
-                        entryNodeId = connectingRoadInfo.StartNodeId;
-                        exitNodeId = connectingRoadInfo.EndNodeId;
-                        isTraversingForward = true;
-                    }
-                    else // contactPoint == "end"
-                    {
-                        // End'den giriyoruz, Start'a dogru gidecegiz (Ters Yon)
-                        entryNodeId = connectingRoadInfo.EndNodeId;
-                        exitNodeId = connectingRoadInfo.StartNodeId;
-                        isTraversingForward = false;
-                        reverseTraversalCount++;
-                    }
-
-                    // 1. Baglantiyi Ekle: Gelen Yol -> Baglanti Yolu Girisi
-                    connections.Add(Tuple.Create(fromNodeId, entryNodeId, LINK_CONNECTION_DISTANCE));
-
-                    // --- ADIM 2: IC BAGLANTI (Traversing Connecting Road) ---
-
-                    // Baglanti yolunun icindeki hareketi ekle (Giris -> Cikis)
-                    connections.Add(Tuple.Create(entryNodeId, exitNodeId, connectingRoadInfo.Length));
-
-                    // --- ADIM 3: CIKIS BAGLANTISI (Connecting Road -> Next Road) ---
-
-                    // Simdi baglanti yolundan ciktik, sirada ne var?
-                    // Eger ileri (Start->End) gittiysek, siradaki yol Successor'dir.
-                    // Eger geri (End->Start) gittiysek, siradaki yol Predecessor'dir.
-
-                    LinkElementInfo nextLink = isTraversingForward
-                        ? connectingRoadInfo.LinkInfo?.Successor
-                        : connectingRoadInfo.LinkInfo?.Predecessor;
-
-                    if (nextLink != null && nextLink.ElementType == "road" && roadInfoMap.ContainsKey(nextLink.ElementId))
-                    {
-                        var nextRoadInfo = roadInfoMap[nextLink.ElementId];
-
-                        // Siradaki yolun hangi ucuna baglaniyoruz?
-                        // nextLink.ContactPoint "start" ise StartNode'una, "end" ise EndNode'una baglanriz.
-                        string nextRoadTargetNodeId;
-
-                        if (string.IsNullOrEmpty(nextLink.ContactPoint) || nextLink.ContactPoint == "start")
-                        {
-                            nextRoadTargetNodeId = nextRoadInfo.StartNodeId;
-                        }
-                        else
-                        {
-                            nextRoadTargetNodeId = nextRoadInfo.EndNodeId;
-                        }
-
-                        // 3. Baglantiyi Ekle: Baglanti Yolu Cikisi -> Siradaki Yol
-                        connections.Add(Tuple.Create(exitNodeId, nextRoadTargetNodeId, LINK_CONNECTION_DISTANCE));
-                    }
-
-                    junctionConnectionCount++;
                 }
             }
-
-            Console.WriteLine($"Kavsak ici baglanti sayisi: {junctionConnectionCount}");
-            if (reverseTraversalCount > 0)
-                Console.WriteLine($"  Ters yonlu baglanti (End->Start): {reverseTraversalCount}");
-            if (laneLinkFilteredCount > 0)
-                Console.WriteLine($"  Serit kisitlamasi nedeniyle filtrelenen: {laneLinkFilteredCount}");
-            if (skippedConnections > 0)
-                Console.WriteLine($"  Atlanan baglanti: {skippedConnections}");
         }
 
-        
         /// İstatistikleri yazdırır
         
-        private void PrintStatistics(int roadCount, int junctionCount, List<Tuple<string, string, double>> connections)
+        private void PrintStatistics(int roadCount, int junctionCount, List<Tuple<string, string, double, string, int>> connections)
         {
             int roadNodeCount = roadCount * 2;
             int totalNodeCount = roadNodeCount + junctionCount;
@@ -806,39 +814,43 @@ namespace ConsoleApp3.Parsers
         
         /// GraphData nesnesini olusturur - Adjacency List ile (bellek verimli)
         
-        private GraphData CreateGraphData(Dictionary<string, Point> nodeCoords, List<Tuple<string, string, double>> connections)
+        private GraphData CreateGraphData(
+            Dictionary<string, Point> nodeCoords, 
+            List<Tuple<string, string, double, string, int>> connections,
+            Dictionary<string, (string StartId, string EndId)> roadMapping,
+            Dictionary<string, JunctionInfo> junctionMapping,
+            Dictionary<(string, int), string> laneMapping)
         {
-            var allNodeIds = nodeCoords.Keys.OrderBy(id => id).ToList();
-            var nodeIdToIndex = new Dictionary<string, int>(allNodeIds.Count);
-
-            for (int i = 0; i < allNodeIds.Count; i++)
-            {
-                nodeIdToIndex[allNodeIds[i]] = i;
-            }
-
-            var nodeCoordinates = new Point[allNodeIds.Count];
-            for (int i = 0; i < allNodeIds.Count; i++)
-            {
-                nodeCoordinates[i] = nodeCoords[allNodeIds[i]];
-            }
-
-            // Adjacency List olustur (matris yerine - bellek verimli)
-            var adjList = new Dictionary<int, List<Edge>>();
+            // Adjacency List olustur (String ID tabanli)
+            var adjList = new Dictionary<string, List<Edge>>();
 
             foreach (var conn in connections)
             {
-                if (nodeIdToIndex.TryGetValue(conn.Item1, out int fromIdx) &&
-                    nodeIdToIndex.TryGetValue(conn.Item2, out int toIdx))
-                {
-                    if (!adjList.ContainsKey(fromIdx))
-                        adjList[fromIdx] = new List<Edge>();
+                string fromId = conn.Item1;
+                string toId = conn.Item2;
+                double weight = conn.Item3;
+                string roadId = conn.Item4;
+                int laneId = conn.Item5;
 
-                    adjList[fromIdx].Add(new Edge(toIdx, conn.Item3));
+                // Eger dugum koordinatlari listemizde bu ID varsa ekle (Tutarlilik kontrolu)
+                if (nodeCoords.ContainsKey(fromId) && nodeCoords.ContainsKey(toId))
+                {
+                    if (!adjList.ContainsKey(fromId))
+                        adjList[fromId] = new List<Edge>();
+
+                    var newEdge = new Edge(toId, weight);
+                    newEdge.RoadId = roadId;
+                    newEdge.LaneId = laneId;
+                    adjList[fromId].Add(newEdge);
                 }
             }
 
-            return new GraphData(adjList, nodeCoordinates, nodeIdToIndex);
+            // Index haritasi olmadan, direkt veriyi veriyoruz
+            var graph = new GraphData(adjList, nodeCoords, roadMapping, junctionMapping);
+            graph.SetLaneNodeMapping(laneMapping);
+            return graph;
         }
+
         #region XML Parsing Helper Methods
 
         

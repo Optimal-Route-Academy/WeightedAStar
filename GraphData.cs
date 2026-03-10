@@ -1,111 +1,206 @@
-﻿using System.Collections.Generic;
-
+﻿using ConsoleApp3.Parsers;
+using System;
+using System.Collections;
 using System.Collections.Generic;
+using System.Linq;
+
 
 namespace ConsoleApp3
 {
     
     /// Graf kenarini temsil eder (Adjacency List icin)
     
-    public struct Edge
+    public class Edge
     {
-        public int ToNodeIndex { get; }
-        public double Weight { get; }
-
+        public int ToNodeIndex { get; set; }
+        public string ToNodeId { get; set; }
+        public double Weight { get; set; }
+        // Yeni: Yol ID - Eger bu kenar bir yola (road/way) aitse
+        public string RoadId { get; set; }
+        // Yeni: Lane ID
+        public int LaneId { get; set; }
         public Edge(int toNodeIndex, double weight)
         {
             ToNodeIndex = toNodeIndex;
             Weight = weight;
         }
+        public Edge(string toNodeId, double weight)
+        {
+            ToNodeId = toNodeId;
+            Weight = weight;
+            ToNodeIndex = -1;
+        }
+    }
+    public class JunctionInfo
+    {
+        public string Id { get; set; }
+        //Gelen Yol ID -> Bağlantılı Yol ID'leri Listesi
+        public Dictionary<string, List<string>> Connections { get; set; } = new Dictionary<string, List<string>>();
     }
 
-    
-    /// Ayristirilmis harita verilerinden olusturulan grafi temsil eder.
-    /// Adjacency List kullanarak bellek verimli calisir.
-    
+
     public class GraphData
     {
-        
-        /// Komsuluk listesi - buyuk graflar icin verimli
-        /// Key: Dugum indeksi, Value: Bu dugumden cikan kenarlarin listesi
-        
-        public Dictionary<int, List<Edge>> AdjacencyList { get; }
+        public int NodeCount { get; private set; }
+        public int EdgeCount { get; private set; }
+        public Dictionary<int, List<Edge>> AdjacencyList { get; private set; }
+        public Dictionary<string, Point> NodeCoordinates { get; private set; }
+        public Point[] NodeCoordinatesArray { get; private set; }
+        public Dictionary<string, int> NodeIdToIndexMap { get; private set; }
+        // Yol ID -> (BaşlangıçDüğümEndeksi, BitişDüğümEndeksi) eşlemesinin şeritleri destekleyecek şekilde güncellenmesi mi gerekiyor?
+        // Aslında, şeritlerle birlikte muhtemelen bir bileşik anahtar (composite key) eşlemesine ihtiyacımız olacak.
+        // Geriye dönük uyumluluk veya gerekirse basit yol bulma işlemleri için RoadIdToNodeIndices yapısını koruyalım,
+        // ama şerit seviyesi (lane-level) için RoadId + LaneId -> DüğümEndeksi yapısına ihtiyacımız var.
 
-        
-        /// Dugum koordinatlari
-        
-        public Point[] NodeCoordinates { get; }
-       
-        
-        //Graf'taki toplam dugum sayisi
-        
-        public int NodeCount => NodeCoordinates?.Length ?? 0;
+        //Harita: (Yol ID, Şerit ID) -> Düğüm İndisi(Mantıksal Başlangıç)
+        public Dictionary<(string RoadId, int LaneId), int> LaneNodeIndices { get; private set; }
 
-        
-        //Orijinal dosyadaki ID'leri (orn: OSM node ID, XODR junction ID) dizi indeksine esler.
-        
-        public Dictionary<string, int> NodeIdToIndexMap { get; }
+        public Dictionary<string, (int StartIndex, int EndIndex)> RoadIdToNodeIndices { get; private set; }
+        public Dictionary<string, JunctionInfo> Junctions { get; private set; }
 
-        
-        // Graf'taki toplam kenar sayisi
-        
-        public int EdgeCount { get; }
-
-        
-        /// Adjacency List ile GraphData olusturur (bellek verimli)
-        
-        public GraphData(Dictionary<int, List<Edge>> adjacencyList, Point[] nodeCoordinates, Dictionary<string, int> nodeIdToIndexMap)
+        public GraphData(Dictionary<int, List<Edge>> adjacencyList, Point[] coordinates, Dictionary<string, int> nodeIdToIndex, Dictionary<string, (string StartId, string EndId)> roadIdToRefIds = null)
         {
             AdjacencyList = adjacencyList;
-            NodeCoordinates = nodeCoordinates;
-            NodeIdToIndexMap = nodeIdToIndexMap;
+            NodeCoordinatesArray = coordinates;
+            NodeIdToIndexMap = nodeIdToIndex;
+            NodeCount = coordinates.Length;
 
-            // Kenar sayisini hesapla
-            int edgeCount = 0;
-            if (adjacencyList != null)
+            //ID(Kimlik) sorgulamaları için NodeCoordinates sözlüğünü(dictionary) verilerle doldur.
+            NodeCoordinates = new Dictionary<string, Point>();
+            foreach (var kvp in nodeIdToIndex)
             {
-                foreach (var edges in adjacencyList.Values)
+                if (kvp.Value >= 0 && kvp.Value < coordinates.Length)
+                    NodeCoordinates[kvp.Key] = coordinates[kvp.Value];
+            }
+
+            EdgeCount = 0;
+            foreach (var list in adjacencyList.Values) EdgeCount += list.Count;
+
+            BuildRoadIndexMap(roadIdToRefIds);
+            Junctions = new Dictionary<string, JunctionInfo>();
+            LaneNodeIndices = new Dictionary<(string, int), int>();
+        }
+
+
+        //XodrParser için Yapıcı Metot(Constructor)
+        public GraphData(Dictionary<string, List<Edge>> adjListString, Dictionary<string, Point> nodeCoords,
+            Dictionary<string, (string StartId, string EndId)> roadIdToRefIds = null,
+            Dictionary<string, JunctionInfo> junctions = null)
+        {
+            NodeCoordinates = nodeCoords;
+            NodeIdToIndexMap = new Dictionary<string, int>();
+            var indexToIdMap = new Dictionary<int, string>();
+
+
+            int index = 0;
+            foreach (var id in nodeCoords.Keys)
+            {
+                NodeIdToIndexMap[id] = index;
+                indexToIdMap[index]= id;
+                index++;
+            }
+            NodeCount = index;
+            NodeCoordinatesArray = new Point[NodeCount];
+            for (int i = 0; i< NodeCount; i++) 
+            {
+                NodeCoordinatesArray[i] = nodeCoords[indexToIdMap[i]];
+            }
+
+            AdjacencyList = new Dictionary<int, List<Edge>>();
+            EdgeCount = 0;
+
+            foreach (var kpv in adjListString)
+            {
+                string fromId = kpv.Key;
+                if (!NodeIdToIndexMap.ContainsKey(fromId)) continue;
+
+                int fromIndex = NodeIdToIndexMap[fromId];
+                var edges = new List<Edge>();
+
+                foreach (var edgeString in kpv.Value)
                 {
-                    edgeCount += edges.Count;
+                    if (edgeString.ToNodeId != null && NodeIdToIndexMap.ContainsKey(edgeString.ToNodeId)) 
+                    {
+                        int toIndex = NodeIdToIndexMap[edgeString.ToNodeId];
+                        var newEdge = new Edge(toIndex, edgeString.Weight);
+                        newEdge.ToNodeId = edgeString.ToNodeId;
+                        newEdge.RoadId = edgeString.RoadId;
+                        newEdge.LaneId = edgeString.LaneId;
+                        edges.Add(newEdge);
+                        EdgeCount++;
+                    }
+                }
+                if (edges.Count > 0)
+                {
+                    AdjacencyList[fromIndex] = edges;
                 }
             }
-            EdgeCount = edgeCount;
+
+            //string-tabanlı düğüm ID'lerinden integer-tabanlı indekslere dönüşüm yapan bir graf oluşturma metodudu olacaktır. Daha tamamlanmamıştır 
+            BuildRoadIndexMap(roadIdToRefIds);
+            Junctions = junctions ?? new Dictionary<string, JunctionInfo>();
+            LaneNodeIndices = new Dictionary<(string, int), int>();
         }
 
-        
-        /// Belirli bir dugumun komsularini dondurur
-        
-        public IEnumerable<Edge> GetNeighbors(int nodeIndex)
+        public void SetLaneNodeMapping(Dictionary<(string RoadId, int LaneId), string> mapping)
         {
-            if (AdjacencyList != null && AdjacencyList.TryGetValue(nodeIndex, out var edges))
+            LaneNodeIndices = new Dictionary<(string, int), int>();
+            foreach (var kvp in mapping)
             {
-                return edges;
-            }
-            return System.Array.Empty<Edge>();
-        }
-
-        
-        /// Iki dugum arasindaki kenar agirligini dondurur
-        
-        public double GetEdgeWeight(int fromNode, int toNode)
-        {
-            if (AdjacencyList != null && AdjacencyList.TryGetValue(fromNode, out var edges))
-            {
-                foreach (var edge in edges)
+                if (NodeIdToIndexMap.ContainsKey(kvp.Value))
                 {
-                    if (edge.ToNodeIndex == toNode)
-                        return edge.Weight;
+                    LaneNodeIndices[kvp.Key] = NodeIdToIndexMap[kvp.Value];
                 }
             }
-            return double.PositiveInfinity;
         }
 
-        
-        /// Iki dugum arasinda kenar var mi kontrol eder
-        
-        public bool HasEdge(int fromNode, int toNode)
+        private void BuildRoadIndexMap(Dictionary<string, (string StartId, string EndId)> roadIdToRefIds)
         {
-            return !double.IsPositiveInfinity(GetEdgeWeight(fromNode, toNode));
+            RoadIdToNodeIndices = new Dictionary<string, (int StartIndex, int EndIndex)>();
+
+            if (roadIdToRefIds == null) return;
+
+            foreach (var kvp in roadIdToRefIds)
+            {
+                string roadId = kvp.Key;
+                string startRef = kvp.Value.StartId;
+                string endRef = kvp.Value.EndId;
+
+                if (NodeIdToIndexMap.ContainsKey(startRef) && NodeIdToIndexMap.ContainsKey(endRef))
+                {
+                    RoadIdToNodeIndices[roadId] = (NodeIdToIndexMap[startRef], NodeIdToIndexMap[endRef]);
+                }
+            }
         }
+
+        /// <summary>
+        /// Bir yolun (roadId) baglanabilecegi potansiyel sonraki yollari dondurur.
+        /// Hem dogrudan baglantilari hem de Junction uzerinden olan baglantilari kapsar.
+        /// </summary>
+        public List<string> GetNextPossibleRoads(string currentRoadId)
+        {
+            // ... (keep logic but it might be less relevant with lanes)
+            if (!RoadIdToNodeIndices.ContainsKey(currentRoadId)) return new List<string>();
+
+            var indices = RoadIdToNodeIndices[currentRoadId];
+            var nextRoads = new HashSet<string>();
+            var potentialExitNodes = new List<int> { indices.StartIndex, indices.EndIndex };
+
+            foreach (var nodeIdx in potentialExitNodes)
+            {
+                if (AdjacencyList.ContainsKey(nodeIdx))
+                {
+                    foreach (var edge in AdjacencyList[nodeIdx])
+                    {
+                        if (!string.IsNullOrEmpty(edge.RoadId) && edge.RoadId != currentRoadId)
+                        {
+                            nextRoads.Add(edge.RoadId);
+                        }
+                    }
+                }
+            }
+            return nextRoads.ToList();
+        }
+
     }
 }
