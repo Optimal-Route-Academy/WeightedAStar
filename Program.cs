@@ -513,6 +513,14 @@ namespace ConsoleApp3
                     string roadId = parts[0];
                     if (int.TryParse(parts[1], out int laneId))
                     {
+                        // Baslangic icin seridin GIRIS dugumu, hedef icin CIKIS dugumu kullanilir.
+                        // Boylece hedef serit de rotanin icinde bastan sona yer alir.
+                        if (isTarget && graph.LaneExitNodeIndices != null &&
+                            graph.LaneExitNodeIndices.TryGetValue((roadId, laneId), out int exitIndex))
+                        {
+                            return exitIndex;
+                        }
+
                         // Look up in LaneNodeIndices
                         if (graph.LaneNodeIndices != null &&
                             graph.LaneNodeIndices.TryGetValue((roadId, laneId), out int nodeIndex))

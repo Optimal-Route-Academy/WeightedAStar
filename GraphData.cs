@@ -55,6 +55,9 @@ namespace ConsoleApp3
         //Harita: (Yol ID, Şerit ID) -> Düğüm İndisi(Mantıksal Başlangıç)
         public Dictionary<(string RoadId, int LaneId), int> LaneNodeIndices { get; private set; }
 
+        //Harita: (Yol ID, Şerit ID) -> Düğüm İndisi(Mantıksal Bitiş / şeridin akış yönündeki çıkışı)
+        public Dictionary<(string RoadId, int LaneId), int> LaneExitNodeIndices { get; private set; }
+
         public Dictionary<string, (int StartIndex, int EndIndex)> RoadIdToNodeIndices { get; private set; }
         public Dictionary<string, JunctionInfo> Junctions { get; private set; }
 
@@ -79,6 +82,7 @@ namespace ConsoleApp3
             BuildRoadIndexMap(roadIdToRefIds);
             Junctions = new Dictionary<string, JunctionInfo>();
             LaneNodeIndices = new Dictionary<(string, int), int>();
+            LaneExitNodeIndices = new Dictionary<(string, int), int>();
         }
 
 
@@ -140,9 +144,12 @@ namespace ConsoleApp3
             BuildRoadIndexMap(roadIdToRefIds);
             Junctions = junctions ?? new Dictionary<string, JunctionInfo>();
             LaneNodeIndices = new Dictionary<(string, int), int>();
+            LaneExitNodeIndices = new Dictionary<(string, int), int>();
         }
 
-        public void SetLaneNodeMapping(Dictionary<(string RoadId, int LaneId), string> mapping)
+        public void SetLaneNodeMapping(
+            Dictionary<(string RoadId, int LaneId), string> mapping,
+            Dictionary<(string RoadId, int LaneId), string> exitMapping = null)
         {
             LaneNodeIndices = new Dictionary<(string, int), int>();
             foreach (var kvp in mapping)
@@ -150,6 +157,17 @@ namespace ConsoleApp3
                 if (NodeIdToIndexMap.ContainsKey(kvp.Value))
                 {
                     LaneNodeIndices[kvp.Key] = NodeIdToIndexMap[kvp.Value];
+                }
+            }
+
+            LaneExitNodeIndices = new Dictionary<(string, int), int>();
+            if (exitMapping == null) return;
+
+            foreach (var kvp in exitMapping)
+            {
+                if (NodeIdToIndexMap.ContainsKey(kvp.Value))
+                {
+                    LaneExitNodeIndices[kvp.Key] = NodeIdToIndexMap[kvp.Value];
                 }
             }
         }
